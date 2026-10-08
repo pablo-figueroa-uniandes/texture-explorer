@@ -1,0 +1,3 @@
+build/
+LiterateP/out/*
+!LiterateP/out/TextureExplorer.pdf

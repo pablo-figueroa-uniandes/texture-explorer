@@ -1,0 +1,83 @@
+@* Introduction.
+This document is the complete program \emph{Texture Explorer}, a small interactive
+tool for a course in computer graphics. It shows a material---a set of images that
+together describe a surface---and lets the student look at every image of the set,
+apply the material to a simple solid, move the camera and the light, and, above all,
+\emph{ask questions}: pointing with the mouse at any texel of any map, the program
+answers with the texture coordinates of that texel, the values stored there in every
+map, and the normal vector that the bump map produces at that point, both in the
+tangent space of the surface and in the coordinate system of the world.
+
+The program is written in the style that Donald E. Knuth called \emph{literate
+programming}: instead of writing a program for a computer and then documenting it, we
+write an essay for human beings in which the program appears, piece by piece, in the
+order in which it is easiest to understand. The pieces are later rearranged
+mechanically into the files that a compiler wants. The tool that does this,
+\texttt{lp.ps1}, is described in the file \texttt{README.md} next to this web.
+
+@ The main ideas a student should take away are few, and they reappear constantly:
+
+\begin{itemize}
+\item \emph{Texture space.} Every point of a surface carries coordinates $(u,v)$ in the
+unit square; the images of the material are indexed by them. How a shape is mapped onto
+the square is a design decision, and different shapes show different trade-offs.
+\item \emph{Height fields.} A grey image $h(u,v)$ can be used in two very different ways:
+as a \emph{bump map}, which only tilts the normal used for shading, or as a
+\emph{displacement map}, which really moves the surface.
+\item \emph{Tangent space.} The normal computed from a bump map is expressed relative to
+the surface, in the frame $(\vect T,\vect B,\vect N)$; it becomes a vector of the world
+only after multiplication by that frame.
+\item \emph{Roughness.} A roughness map changes, point by point, how sharp or blurry the
+specular highlight is, through a microfacet model of reflection.
+\end{itemize}
+
+@ The program consists of the following files, each of which is a module of this web.
+
+\medskip
+\begin{tabular}{ll}
+\texttt{src/Mesh.h}, \texttt{src/Mesh.cpp} & parametric shapes and their texture mapping \\
+\texttt{src/Material.h}, \texttt{src/Material.cpp} & loading the maps of a material \\
+\texttt{src/Inspector.h}, \texttt{src/Inspector.cpp} & the probe: values and normals at a texel \\
+\texttt{shaders/pbr.hlsl} & displacement, bump mapping and lighting on the GPU \\
+\texttt{shaders/gizmo.hlsl} & coloured lines: arrows and the light marker \\
+\texttt{src/Renderer.h}, \texttt{src/Renderer.cpp} & Direct3D 11 device, targets and drawing \\
+\texttt{src/App.h}, \texttt{src/App.cpp} & the user interface \\
+\texttt{src/main.cpp} & the window and the main loop \\
+\texttt{CMakeLists.txt} & the build description \\
+\end{tabular}
+\medskip
+
+We shall meet them roughly from the bottom up: first the geometry, because texture
+coordinates are a property of geometry; then the images; then the mathematics of the
+probe; then the GPU code that does the same mathematics for every pixel; and finally
+the machinery around them. The images themselves come from two libraries of free
+(CC0) materials, \emph{ambientCG} and \emph{Poly Haven}; a PowerShell script downloads ten
+of them and writes a \emph{manifest} that describes their origin.
+
+@ One frame of the program, seen from far away, goes like this. The user interface is
+rebuilt from scratch (Dear ImGui is an ``immediate mode'' library); while it is being
+built we learn whether the mouse is over one of the images, and where. If it is, the
+\emph{inspector} computes everything that can be said about that texel. Then the 3D scene
+is drawn into an off-screen image, together with arrows that show the inspector's
+vectors at the corresponding point of the solid, and the off-screen image is shown in
+the ``Viewport'' panel. Finally the whole user interface is drawn on the screen.
+
+@ \label{conventions}\emph{Conventions.} Throughout the program the world is right-handed with the $y$ axis
+pointing up, and the camera and the light orbit around the origin, where the solid
+sits. Texture space follows the convention of Direct3D: $(0,0)$ is the \emph{top-left}
+corner of an image, $u$ grows to the right and $v$ grows \emph{downwards}.
+
+This has a consequence that is worth stating once and for all. Let $\vect P(u,v)$ be a
+point of a surface, $\vect T=\partial\vect P/\partial u$ and $\vect B=\partial\vect P/\partial v$
+its tangent and bitangent, and $\vect N$ the outward normal. An observer outside the
+surface sees $\vect T$ pointing to the right and, because $v$ grows downwards in the image,
+$\vect B$ pointing \emph{down}. Right $\times$ down is \emph{into} the surface in a
+right-handed system, so for a correctly oriented (not mirrored) texture
+\[ \vect T\times\vect B = -\vect N. \]
+Every shape in the next part has been checked against this rule.
+
+@ \label{encoding}Vectors of unit length can be stored as colours by the affine map
+$\vect n\mapsto\frac12\vect n+\frac12$, which takes $[-1,1]$ to $[0,1]$. Normal maps use
+it, and so do the colour swatches of the inspector and the ``normal'' views of the shader.
+A normal that points straight out of the surface, $(0,0,1)$ in tangent space, becomes the
+characteristic lavender $(0.5,0.5,1)$ of normal maps.

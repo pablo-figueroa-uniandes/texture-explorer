@@ -1,0 +1,599 @@
+@* The renderer.
+The renderer is the only part of the program that speaks Direct3D~11 at length. Its job
+is modest: create the device and the window's swap chain, compile the shaders, keep one
+GPU mesh per shape, and draw the scene into an off-screen image that the user interface
+then displays inside a panel. It knows nothing about the user interface, and the user
+interface knows nothing about Direct3D except the image it receives.
+
+<<file:src/Renderer.h>>=
+#pragma once
+#include "Material.h"
+#include "Mesh.h"
+#include <d3d11.h>
+#include <dxgi1_2.h>
+#include <DirectXMath.h>
+#include <filesystem>
+#include <string>
+#include <vector>
+
+<<Constants of a frame, as seen from C++>>
+
+<<Vertices of lines>>
+
+class Renderer {
+public:
+    <<Public interface of the renderer>>
+
+private:
+    <<Private helpers of the renderer>>
+
+    <<Device and swap chain>>
+
+    <<The off-screen scene target>>
+
+    <<Pipeline objects>>
+};
+
+@ This structure is the C++ image of the constant buffer of \S\ref{cbuffer}. Each line
+of four values is one 16-byte row of the buffer; the |static_assert| catches the most
+common mistake, a structure whose size is not a multiple of a row.
+
+<<Constants of a frame, as seen from C++>>=
+// Mirrors cbuffer Frame in shaders/pbr.hlsl (16-byte aligned rows).
+struct FrameConstants {
+    DirectX::XMFLOAT4X4 world;
+    DirectX::XMFLOAT4X4 viewProj;
+    DirectX::XMFLOAT3 cameraPos;  float bumpStrength;
+    DirectX::XMFLOAT3 lightPos;   float lightIntensity;
+    DirectX::XMFLOAT3 lightColor; float dispScale;
+    float dispMid, dispLod, metallic, ambient;
+    int viewMode, useColor, useBump, useDisp;
+    int useRough; float constRoughness; DirectX::XMFLOAT2 hoverUV;
+    float hoverOn; DirectX::XMFLOAT3 pad;
+};
+static_assert(sizeof(FrameConstants) % 16 == 0);
+
+@ Lines are given as pairs of vertices with a colour each.
+
+<<Vertices of lines>>=
+struct LineVertex {
+    DirectX::XMFLOAT3 pos;
+    DirectX::XMFLOAT4 color;
+};
+
+@ The public interface follows the life of a frame: |BeginFrame| prepares the window for
+the user interface, |RenderScene| draws the 3D view off-screen, |Present| shows the
+result. The number of segments per patch is public because the user interface needs it
+to choose the mipmap level for displacement.
+
+<<Public interface of the renderer>>=
+static constexpr int kMeshSegments = 256;
+
+bool Init(HWND hwnd);
+void Shutdown();
+void Resize(UINT width, UINT height);
+void BeginFrame(const float clear[4]);
+void Present(bool vsync);
+
+bool ReloadShaders(const std::filesystem::path& dir, std::string& log);
+
+// Renders the 3D scene into an offscreen target of the given size and returns
+// a view of the result that ImGui can display.
+ID3D11ShaderResourceView* RenderScene(UINT width, UINT height, const FrameConstants& fc,
+                                      const Material& material, Shape shape,
+                                      const std::vector<LineVertex>& lines);
+
+ID3D11Device* Device() const { return device_.Get(); }
+ID3D11DeviceContext* Context() const { return ctx_.Get(); }
+
+@
+<<Private helpers of the renderer>>=
+struct GpuMesh {
+    ComPtr<ID3D11Buffer> vb, ib;
+    UINT indexCount = 0;
+};
+void CreateBackbufferView();
+void EnsureSceneTarget(UINT width, UINT height);
+GpuMesh& MeshFor(Shape shape);
+
+@ All Direct3D objects are held by |ComPtr|, a smart pointer that releases them
+automatically; the renderer has no destructor to write.
+
+<<Device and swap chain>>=
+ComPtr<ID3D11Device> device_;
+ComPtr<ID3D11DeviceContext> ctx_;
+ComPtr<IDXGISwapChain1> swapChain_;
+ComPtr<ID3D11RenderTargetView> backbufferRtv_;
+
+@
+<<The off-screen scene target>>=
+// Offscreen scene target: 4x MSAA color + depth, resolved to a single-sample texture.
+UINT sceneW_ = 0, sceneH_ = 0;
+ComPtr<ID3D11Texture2D> msaaColor_, resolved_, depth_;
+ComPtr<ID3D11RenderTargetView> msaaRtv_;
+ComPtr<ID3D11DepthStencilView> dsv_;
+ComPtr<ID3D11ShaderResourceView> resolvedSrv_;
+
+@
+<<Pipeline objects>>=
+ComPtr<ID3D11VertexShader> meshVs_, lineVs_;
+ComPtr<ID3D11PixelShader> meshPs_, linePs_;
+ComPtr<ID3D11InputLayout> meshLayout_, lineLayout_;
+ComPtr<ID3D11Buffer> frameCb_, lineVb_;
+ComPtr<ID3D11SamplerState> sampler_;
+ComPtr<ID3D11RasterizerState> rasterNoCull_;
+ComPtr<ID3D11DepthStencilState> depthOn_, depthOff_;
+ComPtr<ID3D11BlendState> alphaBlend_;
+ComPtr<ID3D11ShaderResourceView> fallbackGray_;
+GpuMesh meshes_[int(Shape::Count)];
+static constexpr UINT kMaxLineVertices = 4096;
+
+@ The implementation file is a sequence of member functions.
+
+<<file:src/Renderer.cpp>>=
+#include "Renderer.h"
+#include <d3dcompiler.h>
+#include <algorithm>
+#include <cstring>
+
+using namespace DirectX;
+
+<<Functions of the renderer>>
+
+@ \emph{Initialization} creates, once and for all, everything that does not depend on the
+size of the window or on the shaders.
+
+We ask for a hardware device of feature level 11. In debug builds we also ask for the
+debug layer, which reports misuses of the API in the debugger's output; but the debug
+layer is an optional component of Windows, so if it is missing we try again without it.
+(This piece stays inline, rather than in a module of its own, because the preprocessor
+lines must start in the first column of the file.)
+
+<<Functions of the renderer>>=
+bool Renderer::Init(HWND hwnd) {
+    UINT flags = 0;
+#ifdef _DEBUG
+    flags |= D3D11_CREATE_DEVICE_DEBUG;
+#endif
+    const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
+    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, levels, 2,
+                                   D3D11_SDK_VERSION, &device_, nullptr, &ctx_);
+    if (FAILED(hr) && (flags & D3D11_CREATE_DEVICE_DEBUG)) {  // debug layer not installed
+        hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, levels, 2,
+                               D3D11_SDK_VERSION, &device_, nullptr, &ctx_);
+    }
+    if (FAILED(hr)) return false;
+
+    <<Create the swap chain>>
+
+    <<Create the sampler>>
+
+    <<Create the rasterizer state>>
+
+    <<Create the depth states>>
+
+    <<Create the blend state for lines>>
+
+    <<Create the constant buffer>>
+
+    <<Create the line buffer>>
+
+    <<Create a grey texture for missing maps>>
+    return true;
+}
+
+@ The swap chain is the pair of images that alternate on the screen. We use the modern
+\emph{flip} model, which requires a non-sRGB format for the buffers; that suits Dear
+ImGui, whose colours are already display values. Alt+Enter, which would switch to an
+exclusive full-screen mode, is disabled.
+
+<<Create the swap chain>>=
+ComPtr<IDXGIDevice> dxgiDevice;
+ComPtr<IDXGIAdapter> adapter;
+ComPtr<IDXGIFactory2> factory;
+device_.As(&dxgiDevice);
+dxgiDevice->GetAdapter(&adapter);
+adapter->GetParent(IID_PPV_ARGS(&factory));
+
+DXGI_SWAP_CHAIN_DESC1 sd{};
+sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+sd.SampleDesc.Count = 1;
+sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+sd.BufferCount = 2;
+sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+if (FAILED(factory->CreateSwapChainForHwnd(device_.Get(), hwnd, &sd, nullptr, nullptr, &swapChain_)))
+    return false;
+factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+CreateBackbufferView();
+
+@ \emph{The sampler} decides how texels become a colour. Anisotropic filtering keeps the
+texture sharp on surfaces seen at grazing angles, which on a sphere is everywhere near
+the silhouette. Wrap addressing makes the textures repeat, as they were designed to.
+
+<<Create the sampler>>=
+// Fixed pipeline state.
+D3D11_SAMPLER_DESC samp{};
+samp.Filter = D3D11_FILTER_ANISOTROPIC;
+samp.MaxAnisotropy = 8;
+samp.AddressU = samp.AddressV = samp.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+samp.MaxLOD = D3D11_FLOAT32_MAX;
+device_->CreateSamplerState(&samp, &sampler_);
+
+@ We do not cull back faces. The patches were designed for their texture coordinates,
+not for a consistent winding order of their triangles, and drawing both sides also
+behaves sensibly when a student flies the camera into a solid.
+
+<<Create the rasterizer state>>=
+D3D11_RASTERIZER_DESC rs{};
+rs.FillMode = D3D11_FILL_SOLID;
+rs.CullMode = D3D11_CULL_NONE;
+rs.DepthClipEnable = TRUE;
+rs.MultisampleEnable = TRUE;
+rs.AntialiasedLineEnable = FALSE;
+device_->CreateRasterizerState(&rs, &rasterNoCull_);
+
+@ Two depth states: the normal one, and one that ignores depth, used to draw the arrows
+of the probe faintly even when the solid hides them.
+
+<<Create the depth states>>=
+D3D11_DEPTH_STENCIL_DESC ds{};
+ds.DepthEnable = TRUE;
+ds.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+ds.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+device_->CreateDepthStencilState(&ds, &depthOn_);
+ds.DepthEnable = FALSE;
+ds.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+device_->CreateDepthStencilState(&ds, &depthOff_);
+
+@ Ordinary ``over'' blending, $c = \alpha\,c_{src} + (1-\alpha)\,c_{dst}$, for those faint lines.
+
+<<Create the blend state for lines>>=
+D3D11_BLEND_DESC bd{};
+auto& rt = bd.RenderTarget[0];
+rt.BlendEnable = TRUE;
+rt.SrcBlend = D3D11_BLEND_SRC_ALPHA;
+rt.DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+rt.BlendOp = D3D11_BLEND_OP_ADD;
+rt.SrcBlendAlpha = D3D11_BLEND_ONE;
+rt.DestBlendAlpha = D3D11_BLEND_ZERO;
+rt.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+device_->CreateBlendState(&bd, &alphaBlend_);
+
+@ Buffers that change every frame are \emph{dynamic}: the CPU writes them, the GPU only
+reads them.
+
+<<Create the constant buffer>>=
+D3D11_BUFFER_DESC cb{};
+cb.ByteWidth = sizeof(FrameConstants);
+cb.Usage = D3D11_USAGE_DYNAMIC;
+cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+cb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+device_->CreateBuffer(&cb, nullptr, &frameCb_);
+
+@
+<<Create the line buffer>>=
+D3D11_BUFFER_DESC lb{};
+lb.ByteWidth = sizeof(LineVertex) * kMaxLineVertices;
+lb.Usage = D3D11_USAGE_DYNAMIC;
+lb.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+lb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+device_->CreateBuffer(&lb, nullptr, &lineVb_);
+
+@ A shader that samples an empty slot reads zeros, which for a height map means ``very
+deep'' and for a roughness map ``mirror''. A neutral grey texture is a safer stand-in.
+
+<<Create a grey texture for missing maps>>=
+// 1x1 mid-gray texture bound when a material lacks a map.
+const uint32_t gray = 0xff808080;
+D3D11_TEXTURE2D_DESC td{};
+td.Width = td.Height = 1;
+td.MipLevels = td.ArraySize = 1;
+td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+td.SampleDesc.Count = 1;
+td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+D3D11_SUBRESOURCE_DATA init{&gray, 4, 0};
+ComPtr<ID3D11Texture2D> tex;
+device_->CreateTexture2D(&td, &init, &tex);
+device_->CreateShaderResourceView(tex.Get(), nullptr, &fallbackGray_);
+
+@ The remaining housekeeping of the window: shutting down, creating a view of the back
+buffer, resizing the swap chain when the window changes size (all views of the old
+buffers must be released first), and beginning and presenting a frame. Presenting with
+|vsync| synchronizes the program with the display, so it does not waste the GPU.
+
+<<Functions of the renderer>>=
+void Renderer::Shutdown() {
+    if (ctx_) ctx_->ClearState();
+}
+
+void Renderer::CreateBackbufferView() {
+    ComPtr<ID3D11Texture2D> bb;
+    swapChain_->GetBuffer(0, IID_PPV_ARGS(&bb));
+    device_->CreateRenderTargetView(bb.Get(), nullptr, &backbufferRtv_);
+}
+
+void Renderer::Resize(UINT width, UINT height) {
+    if (!swapChain_ || width == 0 || height == 0) return;
+    backbufferRtv_.Reset();
+    ctx_->OMSetRenderTargets(0, nullptr, nullptr);
+    swapChain_->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+    CreateBackbufferView();
+}
+
+void Renderer::BeginFrame(const float clear[4]) {
+    ctx_->OMSetRenderTargets(1, backbufferRtv_.GetAddressOf(), nullptr);
+    ctx_->ClearRenderTargetView(backbufferRtv_.Get(), clear);
+}
+
+void Renderer::Present(bool vsync) { swapChain_->Present(vsync ? 1 : 0, 0); }
+
+@ \emph{Compiling shaders.} The shaders are compiled from their source files at run time,
+which costs a fraction of a second and buys the possibility of editing them while the
+program runs. Messages of the compiler---errors and warnings---are collected in |log| so
+the interface can show them.
+
+<<Functions of the renderer>>=
+static ComPtr<ID3DBlob> Compile(const std::filesystem::path& file, const char* entry, const char* target,
+                                std::string& log) {
+    UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
+#ifdef _DEBUG
+    flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+    ComPtr<ID3DBlob> code, errors;
+    const HRESULT hr = D3DCompileFromFile(file.c_str(), nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, entry,
+                                          target, flags, 0, &code, &errors);
+    if (errors) log += static_cast<const char*>(errors->GetBufferPointer());
+    if (FAILED(hr)) {
+        if (!errors) log += "Cannot compile " + file.string() + "\n";
+        return nullptr;
+    }
+    return code;
+}
+
+@ Reloading is transactional: the new shaders replace the old ones only if all four
+compile and all objects can be created. A typing mistake in the shader therefore leaves
+the program running with the previous version, and the error message on the screen.
+
+<<Functions of the renderer>>=
+bool Renderer::ReloadShaders(const std::filesystem::path& dir, std::string& log) {
+    log.clear();
+    auto vs = Compile(dir / "pbr.hlsl", "VSMain", "vs_5_0", log);
+    auto ps = Compile(dir / "pbr.hlsl", "PSMain", "ps_5_0", log);
+    auto lvs = Compile(dir / "gizmo.hlsl", "VSLine", "vs_5_0", log);
+    auto lps = Compile(dir / "gizmo.hlsl", "PSLine", "ps_5_0", log);
+    if (!vs || !ps || !lvs || !lps) return false;  // keep the previous working shaders
+
+    <<Describe the two vertex layouts>>
+    <<Create the shader objects, keeping the old ones on failure>>
+    return true;
+}
+
+@ An \emph{input layout} tells the GPU how to read the fields of a vertex from the
+buffer; the names (|POSITION|, |NORMAL|, \dots) match the semantics in the shaders'
+input structures, and |offsetof| keeps the C++ structures the only source of truth.
+
+<<Describe the two vertex layouts>>=
+const D3D11_INPUT_ELEMENT_DESC meshElems[] = {
+    {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Vertex, pos), D3D11_INPUT_PER_VERTEX_DATA, 0},
+    {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Vertex, normal), D3D11_INPUT_PER_VERTEX_DATA, 0},
+    {"TANGENT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, offsetof(Vertex, tangent), D3D11_INPUT_PER_VERTEX_DATA, 0},
+    {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(Vertex, uv), D3D11_INPUT_PER_VERTEX_DATA, 0},
+};
+const D3D11_INPUT_ELEMENT_DESC lineElems[] = {
+    {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(LineVertex, pos), D3D11_INPUT_PER_VERTEX_DATA, 0},
+    {"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, offsetof(LineVertex, color), D3D11_INPUT_PER_VERTEX_DATA, 0},
+};
+
+@
+<<Create the shader objects, keeping the old ones on failure>>=
+ComPtr<ID3D11VertexShader> newVs, newLineVs;
+ComPtr<ID3D11PixelShader> newPs, newLinePs;
+ComPtr<ID3D11InputLayout> newLayout, newLineLayout;
+if (FAILED(device_->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, &newVs)) ||
+    FAILED(device_->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, &newPs)) ||
+    FAILED(device_->CreateVertexShader(lvs->GetBufferPointer(), lvs->GetBufferSize(), nullptr, &newLineVs)) ||
+    FAILED(device_->CreatePixelShader(lps->GetBufferPointer(), lps->GetBufferSize(), nullptr, &newLinePs)) ||
+    FAILED(device_->CreateInputLayout(meshElems, 4, vs->GetBufferPointer(), vs->GetBufferSize(), &newLayout)) ||
+    FAILED(device_->CreateInputLayout(lineElems, 2, lvs->GetBufferPointer(), lvs->GetBufferSize(), &newLineLayout))) {
+    log += "Failed to create shader objects\n";
+    return false;
+}
+meshVs_ = newVs; meshPs_ = newPs; lineVs_ = newLineVs; linePs_ = newLinePs;
+meshLayout_ = newLayout; lineLayout_ = newLineLayout;
+
+@ \emph{The off-screen target} is recreated whenever the viewport panel changes size.
+It is drawn with four samples per pixel (multisample antialiasing), which smooths the
+silhouette of the solid and the thin lines of the probe, and then \emph{resolved} into an
+ordinary texture that Dear ImGui can display.
+
+<<Functions of the renderer>>=
+void Renderer::EnsureSceneTarget(UINT width, UINT height) {
+    if (width == sceneW_ && height == sceneH_ && msaaColor_) return;
+    sceneW_ = width;
+    sceneH_ = height;
+    <<Create the multisampled colour target>>
+
+    <<Create the resolved image>>
+
+    <<Create the depth buffer>>
+}
+
+@ The same trick as in the texture loader (<<Create a texture with a full mipmap chain>>): a
+typeless texture, written through an sRGB view so that the GPU encodes our linear colours
+for display, and read through a plain view so that Dear ImGui copies the encoded bytes to
+the screen unchanged.
+
+<<Create the multisampled colour target>>=
+// Typeless so it can be rendered as sRGB (gamma-correct lighting) but shown by
+// ImGui as UNORM, i.e. the already-encoded values reach the screen untouched.
+D3D11_TEXTURE2D_DESC td{};
+td.Width = width;
+td.Height = height;
+td.MipLevels = td.ArraySize = 1;
+td.Format = DXGI_FORMAT_R8G8B8A8_TYPELESS;
+td.SampleDesc.Count = 4;
+td.BindFlags = D3D11_BIND_RENDER_TARGET;
+device_->CreateTexture2D(&td, nullptr, &msaaColor_);
+D3D11_RENDER_TARGET_VIEW_DESC rd{};
+rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+rd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DMS;
+device_->CreateRenderTargetView(msaaColor_.Get(), &rd, &msaaRtv_);
+
+@
+<<Create the resolved image>>=
+td.SampleDesc.Count = 1;
+td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+device_->CreateTexture2D(&td, nullptr, &resolved_);
+D3D11_SHADER_RESOURCE_VIEW_DESC sd{};
+sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+sd.Texture2D.MipLevels = 1;
+device_->CreateShaderResourceView(resolved_.Get(), &sd, &resolvedSrv_);
+
+@
+<<Create the depth buffer>>=
+td.Format = DXGI_FORMAT_D32_FLOAT;
+td.SampleDesc.Count = 4;
+td.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+device_->CreateTexture2D(&td, nullptr, &depth_);
+device_->CreateDepthStencilView(depth_.Get(), nullptr, &dsv_);
+
+@ \emph{GPU meshes} are built the first time a shape is shown and kept afterwards. They
+never change, so they are |IMMUTABLE|, the fastest kind of buffer.
+
+<<Functions of the renderer>>=
+Renderer::GpuMesh& Renderer::MeshFor(Shape shape) {
+    GpuMesh& m = meshes_[int(shape)];
+    if (m.vb) return m;
+    const MeshData data = BuildMesh(shape, kMeshSegments);
+    D3D11_BUFFER_DESC bd{};
+    bd.Usage = D3D11_USAGE_IMMUTABLE;
+    bd.ByteWidth = UINT(data.vertices.size() * sizeof(Vertex));
+    bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    D3D11_SUBRESOURCE_DATA init{data.vertices.data(), 0, 0};
+    device_->CreateBuffer(&bd, &init, &m.vb);
+    bd.ByteWidth = UINT(data.indices.size() * sizeof(uint32_t));
+    bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
+    init.pSysMem = data.indices.data();
+    device_->CreateBuffer(&bd, &init, &m.ib);
+    m.indexCount = UINT(data.indices.size());
+    return m;
+}
+
+@ \emph{Drawing the scene}, at last. The function returns |nullptr| when there is nothing
+to draw, for instance when the shaders failed to compile the first time.
+
+<<Functions of the renderer>>=
+ID3D11ShaderResourceView* Renderer::RenderScene(UINT width, UINT height, const FrameConstants& fc,
+                                                const Material& material, Shape shape,
+                                                const std::vector<LineVertex>& lines) {
+    if (width == 0 || height == 0 || !meshVs_) return nullptr;
+    EnsureSceneTarget(width, height);
+
+    <<Clear the scene target and set the pipeline state>>
+
+    <<Upload the frame constants>>
+
+    <<Draw the surface>>
+
+    <<Draw the lines>>
+
+    <<Unbind the textures and resolve the multisampled image>>
+    return resolvedSrv_.Get();
+}
+
+@ The background colour is given in linear values, because the target is sRGB; $0.035$
+becomes about $0.2$ on the screen.
+
+<<Clear the scene target and set the pipeline state>>=
+const float clear[4] = {0.035f, 0.04f, 0.05f, 1};  // linear (sRGB target)
+ctx_->ClearRenderTargetView(msaaRtv_.Get(), clear);
+ctx_->ClearDepthStencilView(dsv_.Get(), D3D11_CLEAR_DEPTH, 1, 0);
+ctx_->OMSetRenderTargets(1, msaaRtv_.GetAddressOf(), dsv_.Get());
+const D3D11_VIEWPORT vp{0, 0, float(width), float(height), 0, 1};
+ctx_->RSSetViewports(1, &vp);
+ctx_->RSSetState(rasterNoCull_.Get());
+ctx_->OMSetDepthStencilState(depthOn_.Get(), 0);
+ctx_->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+
+@ |WRITE_DISCARD| gives us fresh memory for the buffer, so the CPU never waits for the
+GPU to finish with last frame's constants.
+
+<<Upload the frame constants>>=
+D3D11_MAPPED_SUBRESOURCE ms;
+ctx_->Map(frameCb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms);
+memcpy(ms.pData, &fc, sizeof(fc));
+ctx_->Unmap(frameCb_.Get(), 0);
+
+@ The surface is one indexed draw call. The four maps are bound to both the vertex shader
+(which needs the displacement map) and the pixel shader; the colour map through its sRGB
+view, the data maps through their linear views.
+
+<<Draw the surface>>=
+// Surface
+GpuMesh& mesh = MeshFor(shape);
+const UINT stride = sizeof(Vertex), offset = 0;
+ctx_->IASetInputLayout(meshLayout_.Get());
+ctx_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+ctx_->IASetVertexBuffers(0, 1, mesh.vb.GetAddressOf(), &stride, &offset);
+ctx_->IASetIndexBuffer(mesh.ib.Get(), DXGI_FORMAT_R32_UINT, 0);
+ctx_->VSSetShader(meshVs_.Get(), nullptr, 0);
+ctx_->PSSetShader(meshPs_.Get(), nullptr, 0);
+ctx_->VSSetConstantBuffers(0, 1, frameCb_.GetAddressOf());
+ctx_->PSSetConstantBuffers(0, 1, frameCb_.GetAddressOf());
+auto srv = [&](MapKind k, bool srgb) -> ID3D11ShaderResourceView* {
+    const auto& map = material.maps[k];
+    if (!map) return fallbackGray_.Get();
+    return srgb ? map->srvSrgb.Get() : map->srvLinear.Get();
+};
+ID3D11ShaderResourceView* srvs[4] = {srv(MapColor, true), srv(MapBump, false), srv(MapDisplacement, false),
+                                     srv(MapRoughness, false)};
+ctx_->VSSetShaderResources(0, 4, srvs);
+ctx_->PSSetShaderResources(0, 4, srvs);
+ctx_->VSSetSamplers(0, 1, sampler_.GetAddressOf());
+ctx_->PSSetSamplers(0, 1, sampler_.GetAddressOf());
+ctx_->DrawIndexed(mesh.indexCount, 0, 0);
+
+@ The lines are drawn twice from the same buffer: the first half holds copies with
+$30\%$ of their opacity, drawn without depth test, so that hidden parts of an arrow
+remain faintly visible through the solid; the second half holds the originals, drawn with
+the depth test. The line shader uses the same constant buffer, of which it only reads
+the first two matrices.
+
+<<Draw the lines>>=
+// Lines: a faint "x-ray" pass ignoring depth, then a depth-tested pass on top.
+if (!lines.empty()) {
+    const UINT n = UINT(std::min<size_t>(lines.size(), kMaxLineVertices / 2));
+    ctx_->Map(lineVb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms);
+    auto* dst = static_cast<LineVertex*>(ms.pData);
+    for (UINT i = 0; i < n; ++i) {
+        dst[i] = lines[i];
+        dst[i].color.w *= 0.3f;
+        dst[n + i] = lines[i];
+    }
+    ctx_->Unmap(lineVb_.Get(), 0);
+    const UINT lstride = sizeof(LineVertex);
+    ctx_->IASetInputLayout(lineLayout_.Get());
+    ctx_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+    ctx_->IASetVertexBuffers(0, 1, lineVb_.GetAddressOf(), &lstride, &offset);
+    ctx_->VSSetShader(lineVs_.Get(), nullptr, 0);
+    ctx_->PSSetShader(linePs_.Get(), nullptr, 0);
+    ctx_->OMSetBlendState(alphaBlend_.Get(), nullptr, 0xffffffff);
+    ctx_->OMSetDepthStencilState(depthOff_.Get(), 0);
+    ctx_->Draw(n, 0);
+    ctx_->OMSetDepthStencilState(depthOn_.Get(), 0);
+    ctx_->Draw(n, n);
+}
+
+@ The textures are unbound before the next frame, in which some of them may be written
+(the mipmap generation of a newly loaded material, for instance); Direct3D refuses to
+have a resource bound for reading and writing at once. The resolve averages the four
+samples of each pixel, interpreting them as sRGB so that the average is taken in linear
+light.
+
+<<Unbind the textures and resolve the multisampled image>>=
+ID3D11ShaderResourceView* nullSrvs[4] = {};
+ctx_->VSSetShaderResources(0, 4, nullSrvs);
+ctx_->PSSetShaderResources(0, 4, nullSrvs);
+ctx_->ResolveSubresource(resolved_.Get(), 0, msaaColor_.Get(), 0, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB);

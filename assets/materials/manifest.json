@@ -1,0 +1,152 @@
+[
+    {
+        "id":  "Bricks076C",
+        "name":  "Bricks 076 C",
+        "site":  "ambientCG",
+        "url":  "https://ambientcg.com/view?id=Bricks076C",
+        "author":  "Lennart Demes (ambientCG)",
+        "license":  "CC0 1.0",
+        "files":  {
+                      "color":  "Bricks076C/color.jpg",
+                      "displacement":  "Bricks076C/displacement.jpg",
+                      "roughness":  "Bricks076C/roughness.jpg",
+                      "normal":  "Bricks076C/normal.jpg"
+                  },
+        "bumpFromHeight":  true
+    },
+    {
+        "id":  "Wood066",
+        "name":  "Wood 066",
+        "site":  "ambientCG",
+        "url":  "https://ambientcg.com/view?id=Wood066",
+        "author":  "Lennart Demes (ambientCG)",
+        "license":  "CC0 1.0",
+        "files":  {
+                      "color":  "Wood066/color.jpg",
+                      "displacement":  "Wood066/displacement.jpg",
+                      "roughness":  "Wood066/roughness.jpg",
+                      "normal":  "Wood066/normal.jpg"
+                  },
+        "bumpFromHeight":  true
+    },
+    {
+        "id":  "Rock030",
+        "name":  "Rock 030",
+        "site":  "ambientCG",
+        "url":  "https://ambientcg.com/view?id=Rock030",
+        "author":  "Lennart Demes (ambientCG)",
+        "license":  "CC0 1.0",
+        "files":  {
+                      "color":  "Rock030/color.jpg",
+                      "displacement":  "Rock030/displacement.jpg",
+                      "roughness":  "Rock030/roughness.jpg",
+                      "normal":  "Rock030/normal.jpg"
+                  },
+        "bumpFromHeight":  true
+    },
+    {
+        "id":  "Metal032",
+        "name":  "Metal 032",
+        "site":  "ambientCG",
+        "url":  "https://ambientcg.com/view?id=Metal032",
+        "author":  "Lennart Demes (ambientCG)",
+        "license":  "CC0 1.0",
+        "files":  {
+                      "color":  "Metal032/color.jpg",
+                      "displacement":  "Metal032/displacement.jpg",
+                      "roughness":  "Metal032/roughness.jpg",
+                      "normal":  "Metal032/normal.jpg"
+                  },
+        "bumpFromHeight":  true
+    },
+    {
+        "id":  "Tiles101",
+        "name":  "Tiles 101",
+        "site":  "ambientCG",
+        "url":  "https://ambientcg.com/view?id=Tiles101",
+        "author":  "Lennart Demes (ambientCG)",
+        "license":  "CC0 1.0",
+        "files":  {
+                      "color":  "Tiles101/color.jpg",
+                      "displacement":  "Tiles101/displacement.jpg",
+                      "roughness":  "Tiles101/roughness.jpg",
+                      "normal":  "Tiles101/normal.jpg"
+                  },
+        "bumpFromHeight":  true
+    },
+    {
+        "id":  "Fabric048",
+        "name":  "Fabric 048",
+        "site":  "ambientCG",
+        "url":  "https://ambientcg.com/view?id=Fabric048",
+        "author":  "Lennart Demes (ambientCG)",
+        "license":  "CC0 1.0",
+        "files":  {
+                      "color":  "Fabric048/color.jpg",
+                      "displacement":  "Fabric048/displacement.jpg",
+                      "roughness":  "Fabric048/roughness.jpg",
+                      "normal":  "Fabric048/normal.jpg"
+                  },
+        "bumpFromHeight":  true
+    },
+    {
+        "id":  "PavingStones131",
+        "name":  "Paving Stones 131",
+        "site":  "ambientCG",
+        "url":  "https://ambientcg.com/view?id=PavingStones131",
+        "author":  "Lennart Demes (ambientCG)",
+        "license":  "CC0 1.0",
+        "files":  {
+                      "color":  "PavingStones131/color.jpg",
+                      "displacement":  "PavingStones131/displacement.jpg",
+                      "roughness":  "PavingStones131/roughness.jpg",
+                      "normal":  "PavingStones131/normal.jpg"
+                  },
+        "bumpFromHeight":  true
+    },
+    {
+        "id":  "castle_brick_07",
+        "name":  "Castle Brick 07",
+        "site":  "Poly Haven",
+        "url":  "https://polyhaven.com/a/castle_brick_07",
+        "author":  "Rob Tuytel",
+        "license":  "CC0 1.0",
+        "files":  {
+                      "color":  "castle_brick_07/color.jpg",
+                      "displacement":  "castle_brick_07/displacement.jpg",
+                      "roughness":  "castle_brick_07/roughness.jpg",
+                      "normal":  "castle_brick_07/normal.jpg"
+                  },
+        "bumpFromHeight":  true
+    },
+    {
+        "id":  "aerial_rocks_02",
+        "name":  "Aerial Rocks 02",
+        "site":  "Poly Haven",
+        "url":  "https://polyhaven.com/a/aerial_rocks_02",
+        "author":  "Rob Tuytel",
+        "license":  "CC0 1.0",
+        "files":  {
+                      "color":  "aerial_rocks_02/color.jpg",
+                      "displacement":  "aerial_rocks_02/displacement.jpg",
+                      "roughness":  "aerial_rocks_02/roughness.jpg",
+                      "normal":  "aerial_rocks_02/normal.jpg"
+                  },
+        "bumpFromHeight":  true
+    },
+    {
+        "id":  "bark_willow_02",
+        "name":  "Bark Willow 02",
+        "site":  "Poly Haven",
+        "url":  "https://polyhaven.com/a/bark_willow_02",
+        "author":  "Charlotte Baglioni",
+        "license":  "CC0 1.0",
+        "files":  {
+                      "color":  "bark_willow_02/color.jpg",
+                      "displacement":  "bark_willow_02/displacement.jpg",
+                      "roughness":  "bark_willow_02/roughness.jpg",
+                      "normal":  "bark_willow_02/normal.jpg"
+                  },
+        "bumpFromHeight":  true
+    }
+]

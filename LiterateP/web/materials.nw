@@ -1,0 +1,464 @@
+@* Materials and their maps.
+A \emph{material} in this program is a set of up to five images of the same size, all
+indexed by the same texture coordinates:
+
+\begin{description}
+\item[Color (albedo)] the base colour of the surface, stored in sRGB;
+\item[Bump] a height field used only to tilt the shading normal;
+\item[Displacement] a height field used to move the vertices;
+\item[Specular roughness] a scalar in $[0,1]$ that controls the size of highlights;
+\item[Normal map] the normal already computed by the authors of the material; we never
+shade with it, but the inspector decodes it for comparison.
+\end{description}
+
+The materials are described by a \emph{manifest}, a small JSON file written by the
+download script (\S\ref{fetch}). For each material it gives a name, its origin (site,
+page, author and licence) and the relative paths of the available maps.
+
+<<file:src/Material.h>>=
+#pragma once
+#include <d3d11.h>
+#include <wrl/client.h>
+#include <DirectXMath.h>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <vector>
+
+using Microsoft::WRL::ComPtr;
+
+<<Kinds of maps>>
+
+<<Map images>>
+
+<<Materials>>
+
+<<The material library>>
+
+@ The kinds of maps are used as array indices, so a plain |enum| is more convenient
+here than an |enum class|.
+
+<<Kinds of maps>>=
+enum MapKind { MapColor, MapBump, MapDisplacement, MapRoughness, MapNormal, MapCount };
+const char* MapName(MapKind k);
+
+@ Every image lives twice. The GPU copy is a texture with a complete chain of mipmaps,
+seen through two \emph{views}: a linear one, which returns the stored bytes divided by
+$255$, and an sRGB one, which converts colours to linear light while sampling, as
+physically based lighting requires. Data maps (heights, roughness) must \emph{not} be
+converted, so for them both views are the same. The user interface always uses the
+linear view, because it wants to show the image as it is stored.
+
+The CPU copy, an array of bytes, is what the inspector reads. Keeping it costs four
+megabytes per $1024\times1024$ map, a small price for being able to compute, without
+asking the GPU, exactly what the GPU computes.
+
+<<Map images>>=
+// One texture: kept both on the GPU (for rendering / UI) and on the CPU (for the inspector).
+struct MapImage {
+    int width = 0, height = 0;
+    std::vector<uint8_t> rgba;                    // CPU copy, 8 bits per channel
+    ComPtr<ID3D11Texture2D> texture;
+    ComPtr<ID3D11ShaderResourceView> srvLinear;   // raw values (data maps, UI display)
+    ComPtr<ID3D11ShaderResourceView> srvSrgb;     // color decoded from sRGB (shading)
+
+    // Bilinear sample with wrap addressing; channels in [0,1].
+    DirectX::XMFLOAT4 Sample(float u, float v) const;
+    // Nearest texel fetch with wrap addressing (red channel).
+    float Texel(int x, int y) const;
+};
+
+@ A material holds the information of its manifest entry and, once loaded, its maps.
+The maps are shared pointers because one image may play two roles: when a pack has no
+bump map, the displacement map is used as the bump map (\S\ref{bumpfromheight}).
+
+<<Materials>>=
+struct Material {
+    std::string id, name, site, url, author, license;
+    std::string files[MapCount];
+    bool bumpFromHeight = true;
+    bool loaded = false;
+    std::shared_ptr<MapImage> maps[MapCount];     // may be null when a map is not available
+};
+
+@ The library reads the manifest once and loads the images of a material when they
+are first needed.
+
+<<The material library>>=
+class MaterialLibrary {
+public:
+    bool Load(const std::filesystem::path& materialsDir, std::string& error);
+    // Lazily uploads a material's textures the first time it is selected.
+    void EnsureLoaded(int index, ID3D11Device* device, ID3D11DeviceContext* ctx);
+    std::vector<Material>& Items() { return items_; }
+
+private:
+    std::filesystem::path dir_;
+    std::vector<Material> items_;
+};
+
+@ The implementation uses two small libraries: Sean Barrett's \texttt{stb\_image} to
+decode JPEG and PNG files, and Niels Lohmann's \texttt{nlohmann/json} to read the
+manifest.
+
+<<file:src/Material.cpp>>=
+#include "Material.h"
+#include <cmath>
+#include <cstdio>
+#include <fstream>
+#include <nlohmann/json.hpp>
+
+<<Instantiate the image decoder>>
+
+using namespace DirectX;
+
+<<Names of the maps>>
+
+<<Texel access with wrap-around>>
+
+<<Bilinear sampling on the CPU>>
+
+<<Load one image into a texture>>
+
+<<Read the manifest>>
+
+<<Load the maps of a material on first use>>
+
+@ \texttt{stb\_image} is a single header. Exactly one source file of the program must
+define the macro that turns on its implementation before including it, and we only need
+two of its many decoders.
+
+<<Instantiate the image decoder>>=
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_JPEG
+#define STBI_ONLY_PNG
+#include <stb_image.h>
+
+@
+<<Names of the maps>>=
+const char* MapName(MapKind k) {
+    static const char* names[] = {"Color (albedo)", "Bump", "Displacement", "Specular roughness", "Normal map (reference)"};
+    return names[k];
+}
+
+@ Textures \emph{repeat}: the texel to the right of the last column is the first
+column. In C++ the remainder of a negative number is negative, hence the double |%|
+in |Wrap|.
+
+<<Texel access with wrap-around>>=
+static int Wrap(int i, int n) { return ((i % n) + n) % n; }
+
+float MapImage::Texel(int x, int y) const {
+    return rgba[(size_t(Wrap(y, height)) * width + Wrap(x, width)) * 4] / 255.0f;
+}
+
+@ \emph{Bilinear sampling} must agree with the GPU, so we must know the GPU's
+convention: the centre of texel $i$ is at $u=(i+\frac12)/W$. A coordinate $u$ therefore
+lies between the texels $x_0=\lfloor uW-\frac12\rfloor$ and $x_0+1$, with weight
+$f_x=uW-\frac12-x_0$ for the second one; the same holds vertically. The result
+interpolates first along $x$ on two rows and then along $y$.
+
+<<Bilinear sampling on the CPU>>=
+XMFLOAT4 MapImage::Sample(float u, float v) const {
+    // Same convention as the GPU: texel centers sit at (i + 0.5) / size.
+    const float x = u * width - 0.5f, y = v * height - 0.5f;
+    const int x0 = int(std::floor(x)), y0 = int(std::floor(y));
+    const float fx = x - x0, fy = y - y0;
+    float out[4] = {};
+    for (int c = 0; c < 4; ++c) {
+        auto at = [&](int xi, int yi) {
+            return rgba[(size_t(Wrap(yi, height)) * width + Wrap(xi, width)) * 4 + c] / 255.0f;
+        };
+        const float top = at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx;
+        const float bot = at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx;
+        out[c] = top * (1 - fy) + bot * fy;
+    }
+    return {out[0], out[1], out[2], out[3]};
+}
+
+@ \emph{Loading an image} has two halves: decoding the file into memory, and creating
+the GPU texture from that memory.
+
+<<Load one image into a texture>>=
+static std::shared_ptr<MapImage> LoadImage(const std::filesystem::path& path, bool srgb,
+                                           ID3D11Device* device, ID3D11DeviceContext* ctx) {
+    <<Decode the image file>>
+
+    <<Keep a CPU copy of the pixels>>
+
+    <<Create a texture with a full mipmap chain>>
+
+    <<Create the linear and sRGB views>>
+    ctx->UpdateSubresource(img->texture.Get(), 0, nullptr, img->rgba.data(), w * 4, 0);
+    ctx->GenerateMips(img->srvLinear.Get());
+    return img;
+}
+
+@ The file is opened with a wide-character name, so that paths with accents work on
+Windows. We always ask for four channels: a grey JPEG is then expanded to grey RGB,
+which keeps all the code that follows uniform.
+
+<<Decode the image file>>=
+FILE* f = nullptr;
+_wfopen_s(&f, path.c_str(), L"rb");
+if (!f) return nullptr;
+int w = 0, h = 0, n = 0;
+stbi_uc* pixels = stbi_load_from_file(f, &w, &h, &n, 4);
+fclose(f);
+if (!pixels) return nullptr;
+
+@
+<<Keep a CPU copy of the pixels>>=
+auto img = std::make_shared<MapImage>();
+img->width = w;
+img->height = h;
+img->rgba.assign(pixels, pixels + size_t(w) * h * 4);
+stbi_image_free(pixels);
+
+@ The texture is created with a \emph{typeless} format. This is what allows two views
+with different interpretations (\texttt{UNORM} and \texttt{UNORM\_SRGB}) of the same
+bytes. Asking for |MipLevels = 0| means ``the whole chain'', and the flags
+|RENDER_TARGET| and |GENERATE_MIPS| let the GPU compute the smaller levels itself.
+
+<<Create a texture with a full mipmap chain>>=
+// Typeless storage lets the same texture be viewed as linear (UI) or sRGB (shading).
+D3D11_TEXTURE2D_DESC td{};
+td.Width = w;
+td.Height = h;
+td.MipLevels = 0;  // full chain
+td.ArraySize = 1;
+td.Format = DXGI_FORMAT_R8G8B8A8_TYPELESS;
+td.SampleDesc.Count = 1;
+td.Usage = D3D11_USAGE_DEFAULT;
+td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+td.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+if (FAILED(device->CreateTexture2D(&td, nullptr, &img->texture))) return nullptr;
+
+@
+<<Create the linear and sRGB views>>=
+D3D11_SHADER_RESOURCE_VIEW_DESC sd{};
+sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+sd.Texture2D.MipLevels = UINT(-1);
+sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+device->CreateShaderResourceView(img->texture.Get(), &sd, &img->srvLinear);
+if (srgb) {
+    sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    device->CreateShaderResourceView(img->texture.Get(), &sd, &img->srvSrgb);
+} else {
+    img->srvSrgb = img->srvLinear;
+}
+
+@ \emph{Reading the manifest.} The manifest is an array of objects; missing fields get
+harmless defaults. Any error is reported as text, which the user interface shows instead
+of the viewport---typically because the download script has not been run yet.
+
+<<Read the manifest>>=
+bool MaterialLibrary::Load(const std::filesystem::path& materialsDir, std::string& error) {
+    dir_ = materialsDir;
+    std::ifstream in(materialsDir / "manifest.json");
+    if (!in) {
+        error = "Cannot open " + (materialsDir / "manifest.json").string() +
+                "\nRun tools\\fetch_textures.ps1 first.";
+        return false;
+    }
+    try {
+        <<Parse the entries of the manifest>>
+    } catch (const std::exception& ex) {
+        error = std::string("manifest.json: ") + ex.what();
+        return false;
+    }
+    if (items_.empty()) error = "manifest.json lists no materials";
+    return !items_.empty();
+}
+
+@
+<<Parse the entries of the manifest>>=
+const nlohmann::json j = nlohmann::json::parse(in);
+static const char* keys[MapCount] = {"color", "bump", "displacement", "roughness", "normal"};
+for (const auto& e : j) {
+    Material m;
+    m.id = e.value("id", "");
+    m.name = e.value("name", m.id);
+    m.site = e.value("site", "");
+    m.url = e.value("url", "");
+    m.author = e.value("author", "");
+    m.license = e.value("license", "");
+    m.bumpFromHeight = e.value("bumpFromHeight", true);
+    if (e.contains("files"))
+        for (int k = 0; k < MapCount; ++k)
+            m.files[k] = e["files"].value(keys[k], "");
+    items_.push_back(std::move(m));
+}
+
+@ \label{bumpfromheight}\emph{Loading the maps of a material.} The paths in the manifest
+are UTF-8; C++20 wants them as |char8_t| to interpret them so. Only the colour map is
+given an sRGB view.
+
+Then comes a decision that matters for teaching. Neither ambientCG nor Poly Haven ships a
+separate bump map for these materials, and this is no accident: a bump map \emph{is} a
+height field, and the displacement map is the height field of the material. So when no
+bump map is present we use the displacement map in its place, and remember that we did,
+so that the interface can say so. The same data then plays both roles, and switching
+bump and displacement on and off separately shows clearly what each one does.
+
+<<Load the maps of a material on first use>>=
+void MaterialLibrary::EnsureLoaded(int index, ID3D11Device* device, ID3D11DeviceContext* ctx) {
+    Material& m = items_[index];
+    if (m.loaded) return;
+    m.loaded = true;
+    for (int k = 0; k < MapCount; ++k)
+        if (!m.files[k].empty())
+            m.maps[k] = LoadImage(dir_ / std::filesystem::path(reinterpret_cast<const char8_t*>(m.files[k].c_str())), k == MapColor, device, ctx);
+    // A bump map is a height field used only for shading. When a pack has no separate
+    // one, the height (displacement) map is the bump map.
+    if (!m.maps[MapBump]) {
+        m.maps[MapBump] = m.maps[MapDisplacement];
+        m.bumpFromHeight = true;
+    } else {
+        m.bumpFromHeight = false;
+    }
+}
+
+@ \label{fetch}\emph{Collecting the materials.} The ten example materials are not part
+of the program; a PowerShell script downloads them and writes the manifest. Seven come
+from ambientCG, whose web API returns, for a list of asset identifiers, the address of a
+ZIP file for each resolution; three come from Poly Haven, whose API returns the address
+of each map separately. All of them are in the public domain (CC0).
+
+<<file:tools/fetch_textures.ps1>>=
+<<Description and parameters of the download script>>
+
+<<Choose the ten materials>>
+
+<<Download the ambientCG materials>>
+
+<<Download the Poly Haven materials>>
+
+<<Write the manifest>>
+
+@ The script can be run again safely: files that already exist are not downloaded
+again, unless |-Force| is given.
+
+<<Description and parameters of the download script>>=
+<#
+  Downloads a small, curated set (10) of CC0 PBR materials from ambientCG and
+  Poly Haven, normalizes their file names and writes assets/materials/manifest.json.
+
+  Every material keeps: color, displacement, roughness and (reference) normal map.
+  Neither site ships a separate "bump" map for these assets; the viewer therefore
+  derives the bump map from the height/displacement map and labels it as such.
+
+  Usage:  powershell -ExecutionPolicy Bypass -File tools\fetch_textures.ps1 [-Force]
+#>
+param([switch]$Force)
+
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+$root = Join-Path (Split-Path -Parent $PSScriptRoot) 'assets\materials'
+New-Item -ItemType Directory -Force $root | Out-Null
+
+@ The selection tries to cover different kinds of surfaces: masonry with deep mortar
+lines, wood, rock, metal, glazed tiles, woven fabric, paving, and bark. Each kind
+exercises bump and roughness maps differently: the glazed tiles, for example, alternate
+mirror-like and rough regions.
+
+<<Choose the ten materials>>=
+$ambientCG = @('Bricks076C', 'Wood066', 'Rock030', 'Metal032', 'Tiles101', 'Fabric048', 'PavingStones131')
+$polyHaven = @('castle_brick_07', 'aerial_rocks_02', 'bark_willow_02')
+
+$manifest = @()
+
+function Save-Url($url, $path) {
+    if ($Force -or -not (Test-Path $path)) {
+        Write-Host "  GET $url"
+        Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $path
+    }
+}
+
+@ For ambientCG we ask the API once for all seven assets, then for each one download the
+\texttt{1K-JPG} archive, extract it to a temporary folder, and copy the four maps we use
+under standard names. We take the DirectX variant of the normal map, whose green channel
+points to $+v$ like our tangent-space $y$ axis.
+
+<<Download the ambientCG materials>>=
+# ---------------------------------------------------------------- ambientCG
+$ids = $ambientCG -join ','
+$api = Invoke-WebRequest -UseBasicParsing "https://ambientcg.com/api/v2/full_json?id=$ids&include=downloadData" |
+       Select-Object -ExpandProperty Content | ConvertFrom-Json
+foreach ($id in $ambientCG) {
+    $asset = $api.foundAssets | Where-Object assetId -eq $id
+    if (-not $asset) { Write-Warning "ambientCG asset $id not found"; continue }
+    Write-Host "ambientCG: $id"
+    $dir = Join-Path $root $id
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    $dl = $asset.downloadFolders.default.downloadFiletypeCategories.zip.downloads | Where-Object attribute -eq '1K-JPG'
+    $zip = Join-Path $env:TEMP "$id`_1K-JPG.zip"
+    $tmp = Join-Path $env:TEMP "texex_$id"
+    if ($Force -or -not (Test-Path (Join-Path $dir 'color.jpg'))) {
+        Save-Url $dl.fullDownloadPath $zip
+        if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
+        Expand-Archive -Path $zip -DestinationPath $tmp
+        $map = @{ 'Color' = 'color.jpg'; 'Displacement' = 'displacement.jpg'; 'Roughness' = 'roughness.jpg'; 'NormalDX' = 'normal.jpg' }
+        foreach ($k in $map.Keys) {
+            $src = Get-ChildItem $tmp -Filter "*_$k.jpg" | Select-Object -First 1
+            if ($src) { Copy-Item $src.FullName (Join-Path $dir $map[$k]) -Force }
+        }
+        Remove-Item -Recurse -Force $tmp
+        Remove-Item -Force $zip
+    }
+    $manifest += [ordered]@{
+        id      = $id
+        name    = $asset.displayName
+        site    = 'ambientCG'
+        url     = "https://ambientcg.com/view?id=$id"
+        author  = 'Lennart Demes (ambientCG)'
+        license = 'CC0 1.0'
+    }
+}
+
+@ Poly Haven needs two requests per asset: one for the list of files, one for the
+descriptive information, which includes the authors.
+
+<<Download the Poly Haven materials>>=
+# ---------------------------------------------------------------- Poly Haven
+foreach ($id in $polyHaven) {
+    Write-Host "Poly Haven: $id"
+    $files = Invoke-WebRequest -UseBasicParsing "https://api.polyhaven.com/files/$id" | Select-Object -ExpandProperty Content | ConvertFrom-Json
+    $info  = Invoke-WebRequest -UseBasicParsing "https://api.polyhaven.com/info/$id"  | Select-Object -ExpandProperty Content | ConvertFrom-Json
+    $dir = Join-Path $root $id
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    $map = @{ 'Diffuse' = 'color.jpg'; 'Displacement' = 'displacement.jpg'; 'Rough' = 'roughness.jpg'; 'nor_dx' = 'normal.jpg' }
+    foreach ($k in $map.Keys) {
+        $url = $files.$k.'1k'.jpg.url
+        if ($url) { Save-Url $url (Join-Path $dir $map[$k]) }
+    }
+    $manifest += [ordered]@{
+        id      = $id
+        name    = $info.name
+        site    = 'Poly Haven'
+        url     = "https://polyhaven.com/a/$id"
+        author  = ($info.authors.PSObject.Properties.Name -join ', ')
+        license = 'CC0 1.0'
+    }
+}
+
+@ Finally the list of files that actually exist is recorded for every material, together
+with the flag that tells the program to use the height map as bump map.
+
+<<Write the manifest>>=
+# ---------------------------------------------------------------- manifest
+foreach ($m in $manifest) {
+    $dir = Join-Path $root $m.id
+    $m.files = [ordered]@{}
+    foreach ($f in 'color', 'bump', 'displacement', 'roughness', 'normal') {
+        $p = Join-Path $dir "$f.jpg"
+        if (Test-Path $p) { $m.files[$f] = "$($m.id)/$f.jpg" }
+    }
+    # No pack provides a dedicated bump map: bump is derived from the height map.
+    $m.bumpFromHeight = -not $m.files.Contains('bump')
+}
+$json = ConvertTo-Json -InputObject @($manifest) -Depth 5
+[IO.File]::WriteAllText((Join-Path $root 'manifest.json'), $json, (New-Object Text.UTF8Encoding $false))
+Write-Host "Wrote $($manifest.Count) materials to $root\manifest.json"

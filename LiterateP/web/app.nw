@@ -1,0 +1,937 @@
+@* The application and its user interface.
+The class |App| owns the renderer and the material library, holds the state that the
+user can change, and builds the user interface every frame. The interface is made with
+Dear ImGui, an \emph{immediate-mode} library: there are no widget objects to create and
+destroy; every frame, the program simply calls |ImGui::Button|, |ImGui::SliderFloat| and so
+on, and each call both draws the widget and reports whether the user interacted with it.
+This style fits a teaching tool very well, because the state lives in plain variables
+that the rest of the program reads directly.
+
+<<file:src/App.h>>=
+#pragma once
+#include "Inspector.h"
+#include "Material.h"
+#include "Mesh.h"
+#include "Renderer.h"
+#include <filesystem>
+#include <string>
+
+struct ImVec2;
+
+<<The orbiting camera>>
+
+<<The orbiting light>>
+
+class App {
+public:
+    <<Public interface of the application>>
+
+private:
+    <<Private member functions of the application>>
+
+    <<Resources of the application>>
+
+    <<State of the scene>>
+
+    <<State of the shading>>
+
+    <<State of the inspector>>
+};
+
+@ \label{orbit}The camera always looks at the origin from a point on a sphere, given by
+spherical coordinates: \emph{yaw} (rotation around the vertical axis), \emph{pitch}
+(elevation) and \emph{distance}. The default yaw puts the camera on the side of the solid
+where the middle of the texture, $u=\frac12$, is mapped.
+
+<<The orbiting camera>>=
+struct OrbitCamera {
+    float yaw = -1.3f, pitch = 0.3f, distance = 3.6f;  // faces the texture's center (u = 0.5)
+    DirectX::XMFLOAT3 Eye() const;
+};
+
+@ The light is a point light that moves in the same way, plus an intensity, a colour, and
+an optional automatic orbit around the vertical axis.
+
+<<The orbiting light>>=
+struct OrbitLight {
+    float azimuth = -2.0f, elevation = 0.5f, radius = 2.4f;
+    float intensity = 5.0f;
+    float color[3] = {1.0f, 0.97f, 0.92f};
+    bool autoOrbit = false;
+    float speed = 0.6f;  // rad/s
+    DirectX::XMFLOAT3 Position() const;
+};
+
+@ The main program needs only to initialize the application, call |Frame| once per frame,
+and reach the renderer to set up Dear ImGui and to present.
+
+<<Public interface of the application>>=
+bool Init(HWND hwnd);
+void Shutdown();
+void Frame(float dt);           // builds the UI and renders the scene
+Renderer& GetRenderer() { return renderer_; }
+void ReloadShaders();
+
+@ One private function per panel of the interface.
+
+<<Private member functions of the application>>=
+void BuildDockLayout(unsigned int dockspaceId);
+void UiMaterials();
+void UiScene();
+void UiMaps();
+void UiInspector();
+void UiViewport();
+void UiConcepts();
+// Draws a map image; if hovered, records the hovered uv. Click pins the probe.
+void MapImage(MapKind kind, const ImVec2& size);
+Material& Current() { return library_.Items()[current_]; }
+DirectX::XMMATRIX World() const;
+
+@
+<<Resources of the application>>=
+Renderer renderer_;
+MaterialLibrary library_;
+std::filesystem::path root_;
+std::string loadError_, shaderLog_;
+bool shadersOk_ = false;
+
+@ The state of the scene: which material and shape are shown, the camera, the light, and
+the rotation of the solid around its vertical axis.
+
+<<State of the scene>>=
+int current_ = 0;
+Shape shape_ = Shape::Sphere;
+OrbitCamera camera_;
+OrbitLight light_;
+bool rotate_ = false;
+float rotSpeed_ = 0.5f, rotAngle_ = 0;
+
+@
+<<State of the shading>>=
+// Shading
+BumpSettings bump_;
+bool useColor_ = true, useBump_ = true, useRough_ = true;
+float constRough_ = 0.5f, metallic_ = 0, ambient_ = 0.03f;
+int viewMode_ = 0;
+bool showArrows_ = true;
+
+@ \label{probestate}The state of the probe deserves attention. The probe follows the
+mouse while it hovers any map; a left click \emph{pins} it, so that the user can then
+move the mouse elsewhere---to rotate the camera, say---while the readouts stay. The flag
+|hoveredThisFrame_| is cleared at the start of each frame and set by any map image that
+the mouse is over; at the end of the interface, an unpinned probe that nobody hovered
+becomes invalid.
+
+<<State of the inspector>>=
+// Inspector
+MapKind inspected_ = MapColor;
+bool hoveredThisFrame_ = false, pinned_ = false;
+DirectX::XMFLOAT2 probeUV_{0.5f, 0.5f};
+bool probeValid_ = false;
+HoverInfo info_;
+
+@ The implementation begins with a few helpers of local interest, followed by the member
+functions.
+
+<<file:src/App.cpp>>=
+#include "App.h"
+#include <imgui.h>
+#include <imgui_internal.h>  // DockBuilder
+#include <shellapi.h>
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+
+using namespace DirectX;
+
+namespace {
+<<Private helpers of the application>>
+} // namespace
+
+<<Functions of the application>>
+
+@
+<<Private helpers of the application>>=
+constexpr float kPi = 3.14159265f;
+
+@ Dear ImGui refers to textures by an opaque number; with the Direct3D~11 back end, that
+number is the address of a shader resource view.
+
+<<Private helpers of the application>>=
+ImTextureID Tex(ID3D11ShaderResourceView* srv) { return (ImTextureID)(intptr_t)srv; }
+
+@ The program needs its \texttt{shaders} and \texttt{assets} folders. It looks for them in
+the folder of the executable and in its ancestors, which covers both a build tree
+(\texttt{build/Release/}) and a copied installation; as a last resort it uses the source
+folder recorded by CMake at compile time.
+
+<<Private helpers of the application>>=
+std::filesystem::path FindRoot() {
+    wchar_t buf[MAX_PATH];
+    GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    for (auto p = std::filesystem::path(buf).parent_path(); p.has_relative_path(); p = p.parent_path())
+        if (std::filesystem::exists(p / "shaders" / "pbr.hlsl")) return p;
+    return std::filesystem::path(TEXEX_ROOT);
+}
+
+@ Rows of the inspector's tables. A vector is shown with its three components and, when
+it is a unit vector, a swatch of the colour that encodes it by $\frac12\vect n+\frac12$
+(\S\ref{encoding}). Hovering the label explains the row.
+
+<<Private helpers of the application>>=
+ImVec4 Encode(const XMFLOAT3& n) { return {n.x * 0.5f + 0.5f, n.y * 0.5f + 0.5f, n.z * 0.5f + 0.5f, 1}; }
+
+@
+<<Private helpers of the application>>=
+void Vec3Row(const char* label, const XMFLOAT3& v, bool swatch, const char* tip) {
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(label);
+    if (tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+    ImGui::TableNextColumn();
+    ImGui::Text("(%+.3f, %+.3f, %+.3f)", v.x, v.y, v.z);
+    ImGui::TableNextColumn();
+    if (swatch) {
+        ImGui::PushID(label);
+        ImGui::ColorButton("##sw", Encode(v), ImGuiColorEditFlags_NoTooltip, ImVec2(36, 0));
+        ImGui::PopID();
+    }
+}
+
+@ A scalar is shown both as a fraction and as the byte actually stored in the image,
+because students often meet both forms.
+
+<<Private helpers of the application>>=
+void ScalarRow(const char* label, float v, const char* tip) {
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(label);
+    if (tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+    ImGui::TableNextColumn();
+    ImGui::Text("%.4f   (%d/255)", v, int(std::lround(v * 255)));
+    ImGui::TableNextColumn();
+    ImGui::ColorButton("##g", ImVec4(v, v, v, 1), ImGuiColorEditFlags_NoTooltip, ImVec2(36, 0));
+}
+
+@ An arrow is a segment plus two short segments for the head. The head lies in the plane
+spanned by the arrow and the vertical (or the $x$ axis, if the arrow is vertical).
+
+<<Private helpers of the application>>=
+void AddArrow(std::vector<LineVertex>& out, XMVECTOR from, XMVECTOR dir, float len, XMFLOAT4 color) {
+    const XMVECTOR to = from + XMVector3Normalize(dir) * len;
+    XMFLOAT3 a, b;
+    XMStoreFloat3(&a, from);
+    XMStoreFloat3(&b, to);
+    out.push_back({a, color});
+    out.push_back({b, color});
+    // Small arrow head: two short lines in a plane containing dir.
+    XMVECTOR side = XMVector3Cross(dir, XMVectorSet(0, 1, 0, 0));
+    if (XMVectorGetX(XMVector3LengthSq(side)) < 1e-6f) side = XMVector3Cross(dir, XMVectorSet(1, 0, 0, 0));
+    side = XMVector3Normalize(side) * (len * 0.12f);
+    const XMVECTOR back = to - XMVector3Normalize(dir) * (len * 0.2f);
+    XMFLOAT3 h1, h2;
+    XMStoreFloat3(&h1, back + side);
+    XMStoreFloat3(&h2, back - side);
+    out.push_back({b, color}); out.push_back({h1, color});
+    out.push_back({b, color}); out.push_back({h2, color});
+}
+
+@ A circle of radius $r$ in the plane spanned by two orthonormal vectors $\vect a_x$,
+$\vect a_y$, approximated by 24 segments. Three of them, in the three coordinate planes,
+make the marker of the light.
+
+<<Private helpers of the application>>=
+void AddCircle(std::vector<LineVertex>& out, XMFLOAT3 c, XMVECTOR ax, XMVECTOR ay, float r, XMFLOAT4 color) {
+    const XMVECTOR center = XMLoadFloat3(&c);
+    const int n = 24;
+    for (int i = 0; i < n; ++i) {
+        const float a0 = 2 * kPi * i / n, a1 = 2 * kPi * (i + 1) / n;
+        XMFLOAT3 p0, p1;
+        XMStoreFloat3(&p0, center + r * (std::cos(a0) * ax + std::sin(a0) * ay));
+        XMStoreFloat3(&p1, center + r * (std::cos(a1) * ax + std::sin(a1) * ay));
+        out.push_back({p0, color});
+        out.push_back({p1, color});
+    }
+}
+
+@ The names of the debug views, in the order of the |viewMode| values of
+<<Choose a debug view>>.
+
+<<Private helpers of the application>>=
+const char* kViewModes[] = {"Lit (GGX)", "Albedo only", "World normal (bumped)", "Tangent-space normal",
+                            "Roughness", "Bump height", "UV coordinates"};
+
+@ The positions of the camera and of the light follow from their spherical coordinates
+(\S\ref{orbit}): with elevation $\phi$ and azimuth $\theta$, the point at distance $d$ is
+$d\,(\cos\phi\sin\theta,\ \sin\phi,\ \cos\phi\cos\theta)$.
+
+<<Functions of the application>>=
+XMFLOAT3 OrbitCamera::Eye() const {
+    return {distance * std::cos(pitch) * std::sin(yaw), distance * std::sin(pitch),
+            distance * std::cos(pitch) * std::cos(yaw)};
+}
+
+@
+<<Functions of the application>>=
+XMFLOAT3 OrbitLight::Position() const {
+    return {radius * std::cos(elevation) * std::sin(azimuth), radius * std::sin(elevation),
+            radius * std::cos(elevation) * std::cos(azimuth)};
+}
+
+@ \emph{Initialization.} All ten materials are loaded at once, about a second's work, so
+that the list can show a thumbnail of each.
+
+<<Functions of the application>>=
+bool App::Init(HWND hwnd) {
+    if (!renderer_.Init(hwnd)) return false;
+    root_ = FindRoot();
+    if (library_.Load(root_ / "assets" / "materials", loadError_))
+        for (int i = 0; i < int(library_.Items().size()); ++i)  // all, for the thumbnails
+            library_.EnsureLoaded(i, renderer_.Device(), renderer_.Context());
+    ReloadShaders();
+    return true;
+}
+
+@
+<<Functions of the application>>=
+void App::Shutdown() { renderer_.Shutdown(); }
+
+@
+<<Functions of the application>>=
+void App::ReloadShaders() { shadersOk_ = renderer_.ReloadShaders(root_ / "shaders", shaderLog_); }
+
+@ The world matrix of the solid is a rotation around the vertical axis by the angle that
+the animation advances. Being a pure rotation is what allows the inspector to transform
+normals with it directly (<<Find the probe on the solid and express the normals in world space>>).
+
+<<Functions of the application>>=
+XMMATRIX App::World() const { return XMMatrixRotationY(rotAngle_); }
+
+@ \emph{One frame of the interface.} The order of the steps matters only in one respect:
+the probe must be decided (by the panels that show maps) before the viewport is drawn,
+because the viewport shows the probe's arrows.
+
+<<Functions of the application>>=
+void App::Frame(float dt) {
+    <<Advance the animations and handle the keyboard>>
+
+    <<Create the dock space and its initial layout>>
+
+    <<If there are no materials, say why and stop>>
+
+    <<Build the panels and run the probe>>
+}
+
+@ The animations advance by the time elapsed since the previous frame, |dt|, so their
+speed does not depend on the frame rate. The space bar toggles the rotation of the solid
+unless a text field is being edited.
+
+<<Advance the animations and handle the keyboard>>=
+if (rotate_) rotAngle_ = std::fmod(rotAngle_ + rotSpeed_ * dt, 2 * kPi);
+if (light_.autoOrbit) light_.azimuth = std::fmod(light_.azimuth + light_.speed * dt, 2 * kPi);
+if (ImGui::IsKeyPressed(ImGuiKey_F5)) ReloadShaders();
+if (ImGui::IsKeyPressed(ImGuiKey_Space) && !ImGui::GetIO().WantTextInput) rotate_ = !rotate_;
+
+@ The panels are \emph{docked} into the main window. The first time the program runs,
+there is no saved layout, and we build one (\S\ref{docklayout}); later runs restore the
+layout the user left, which Dear ImGui saves in \texttt{imgui.ini}. On the second frame we
+bring the ``Scene'' tab to the front of the dock it shares with ``Concepts''.
+
+<<Create the dock space and its initial layout>>=
+const ImGuiID dockId = ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
+static bool layoutBuilt = false;
+if (!layoutBuilt) {
+    layoutBuilt = true;
+    ImGuiDockNode* node = ImGui::DockBuilderGetNode(dockId);
+    if (!node || node->IsLeafNode()) BuildDockLayout(dockId);
+} else if (ImGui::GetFrameCount() == 2) {
+    ImGui::SetWindowFocus("Scene");  // Scene and Concepts share a dock; start on Scene
+}
+
+@
+<<If there are no materials, say why and stop>>=
+if (library_.Items().empty()) {
+    ImGui::Begin("Viewport");
+    ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "%s", loadError_.c_str());
+    ImGui::End();
+    return;
+}
+
+@ This is the protocol of \S\ref{probestate} in action. When the probe is valid, the
+inspector is run with the current material, shape, rotation and settings, and its answer
+is kept in |info_| for the viewport and, in the next frame, for the inspector panel.
+
+<<Build the panels and run the probe>>=
+// The probe is driven by whatever map image is hovered during this frame.
+hoveredThisFrame_ = false;
+UiMaterials();
+UiScene();
+UiMaps();
+UiInspector();
+if (!hoveredThisFrame_ && !pinned_) probeValid_ = false;
+if (probeValid_) {
+    info_ = Inspect(Current(), probeUV_.x, probeUV_.y, shape_, World(), bump_);
+} else {
+    info_ = HoverInfo{};
+}
+UiViewport();
+UiConcepts();
+
+@ \label{docklayout}\emph{The initial layout} splits the window into three columns: on the
+left the list of materials above the controls; in the middle the 3D viewport; on the
+right the maps above the inspector.
+
+<<Functions of the application>>=
+void App::BuildDockLayout(ImGuiID dockId) {
+    ImGui::DockBuilderRemoveNode(dockId);
+    ImGui::DockBuilderAddNode(dockId, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dockId, ImGui::GetMainViewport()->Size);
+    ImGuiID center = dockId;
+    ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.21f, nullptr, &center);
+    ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.46f, nullptr, &center);
+    ImGuiID leftBottom = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.55f, nullptr, &left);
+    ImGuiID rightBottom = ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.66f, nullptr, &right);
+    ImGui::DockBuilderDockWindow("Materials", left);
+    ImGui::DockBuilderDockWindow("Scene", leftBottom);
+    ImGui::DockBuilderDockWindow("Concepts", leftBottom);
+    ImGui::DockBuilderDockWindow("Maps", right);
+    ImGui::DockBuilderDockWindow("Inspector", rightBottom);
+    ImGui::DockBuilderDockWindow("Viewport", center);
+    ImGui::DockBuilderFinish(dockId);
+}
+
+@ \emph{The ``Materials'' panel} lists the materials and tells where the selected one comes
+from. Crediting the sources is a matter of courtesy even when, as here, the licence does
+not require it.
+
+<<Functions of the application>>=
+void App::UiMaterials() {
+    ImGui::Begin("Materials");
+    <<List the materials with their thumbnails>>
+
+    <<Show the origin of the current material>>
+    ImGui::End();
+}
+
+@ Each entry is a selectable row as tall as a thumbnail, over which the thumbnail and the
+two lines of text are drawn. Clicking a row selects the material (and loads it, should
+it not be loaded yet).
+
+<<List the materials with their thumbnails>>=
+auto& items = library_.Items();
+for (int i = 0; i < int(items.size()); ++i) {
+    ImGui::PushID(i);
+    const Material& m = items[i];
+    if (ImGui::Selectable("##sel", current_ == i, 0, ImVec2(0, 36))) {
+        current_ = i;
+        library_.EnsureLoaded(i, renderer_.Device(), renderer_.Context());
+    }
+    ImGui::SameLine(0, 0);
+    ImGui::SetCursorPosX(ImGui::GetStyle().WindowPadding.x);
+    if (m.loaded && m.maps[MapColor])
+        ImGui::Image(Tex(m.maps[MapColor]->srvLinear.Get()), ImVec2(36, 36));
+    else
+        ImGui::Dummy(ImVec2(36, 36));
+    ImGui::SameLine();
+    ImGui::BeginGroup();
+    ImGui::TextUnformatted(m.name.c_str());
+    ImGui::TextDisabled("%s", m.site.c_str());
+    ImGui::EndGroup();
+    ImGui::PopID();
+}
+
+@ The button opens the page of the material in the default web browser.
+
+<<Show the origin of the current material>>=
+ImGui::SeparatorText("Origin of this material");
+const Material& m = Current();
+ImGui::Text("Source:  %s", m.site.c_str());
+ImGui::Text("Author:  %s", m.author.c_str());
+ImGui::Text("License: %s", m.license.c_str());
+ImGui::TextWrapped("%s", m.url.c_str());
+if (ImGui::Button("Open source page")) {
+    const std::wstring url(m.url.begin(), m.url.end());
+    ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+if (m.bumpFromHeight)
+    ImGui::TextWrapped("Note: this pack ships no separate bump map, so the height (displacement) "
+                       "map is used as the bump map.");
+
+@ \emph{The ``Scene'' panel} holds every control of the scene, grouped under headings.
+
+<<Functions of the application>>=
+void App::UiScene() {
+    ImGui::Begin("Scene");
+    <<Controls of the object>>
+
+    <<Controls of the camera>>
+
+    <<Controls of the light>>
+
+    <<Controls of the maps and the shading>>
+
+    <<Controls of the shaders>>
+    ImGui::End();
+}
+
+@ The rotation angle has its own slider, so that the animation can be stopped and the
+solid turned by hand to a chosen angle.
+
+<<Controls of the object>>=
+ImGui::SeparatorText("Object");
+int s = int(shape_);
+const char* shapes[] = {ShapeName(Shape::Sphere), ShapeName(Shape::Pyramid), ShapeName(Shape::Cylinder),
+                        ShapeName(Shape::Capsule)};
+if (ImGui::Combo("Shape", &s, shapes, int(Shape::Count))) shape_ = Shape(s);
+ImGui::Checkbox("Rotate object (Space)", &rotate_);
+ImGui::SliderFloat("Rotation speed", &rotSpeed_, -2.0f, 2.0f, "%.2f rad/s");
+float deg = XMConvertToDegrees(rotAngle_);
+if (ImGui::SliderFloat("Rotation angle", &deg, 0, 360, "%.0f deg")) rotAngle_ = XMConvertToRadians(deg);
+
+@ The angles are stored in radians; |SliderAngle| shows them in degrees.
+
+<<Controls of the camera>>=
+ImGui::SeparatorText("Camera  (left-drag / wheel in viewport)");
+ImGui::SliderAngle("Cam yaw", &camera_.yaw, -180, 180);
+ImGui::SliderAngle("Cam pitch", &camera_.pitch, -89, 89);
+ImGui::SliderFloat("Distance", &camera_.distance, 1.5f, 12.0f);
+
+@
+<<Controls of the light>>=
+ImGui::SeparatorText("Light  (right-drag in viewport)");
+ImGui::Checkbox("Orbit light automatically", &light_.autoOrbit);
+ImGui::SliderAngle("Light azimuth", &light_.azimuth, -180, 180);
+ImGui::SliderAngle("Light elevation", &light_.elevation, -89, 89);
+ImGui::SliderFloat("Light distance", &light_.radius, 1.5f, 8.0f);
+ImGui::SliderFloat("Intensity", &light_.intensity, 0.0f, 10.0f);
+ImGui::ColorEdit3("Light color", light_.color, ImGuiColorEditFlags_NoInputs);
+ImGui::SameLine();
+ImGui::SliderFloat("Orbit speed", &light_.speed, -3.0f, 3.0f);
+
+@ These are the controls that make the experiments possible: each map can be switched
+off, the strength of the bump and the scale of the displacement can be exaggerated, and
+the view can show any intermediate quantity of the shader.
+
+<<Controls of the maps and the shading>>=
+ImGui::SeparatorText("Maps used for shading");
+ImGui::Checkbox("Color", &useColor_);
+ImGui::SameLine();
+ImGui::Checkbox("Bump", &useBump_);
+ImGui::SameLine();
+ImGui::Checkbox("Displacement", &bump_.useDisplacement);
+ImGui::SameLine();
+ImGui::Checkbox("Roughness", &useRough_);
+ImGui::SliderFloat("Bump strength", &bump_.strength, 0.0f, 30.0f);
+ImGui::SliderFloat("Displacement scale", &bump_.displacementScale, 0.0f, 0.3f);
+ImGui::SliderFloat("Displacement mid-level", &bump_.displacementMid, 0.0f, 1.0f);
+ImGui::BeginDisabled(useRough_);
+ImGui::SliderFloat("Constant roughness", &constRough_, 0.04f, 1.0f);
+ImGui::EndDisabled();
+ImGui::SliderFloat("Metallic", &metallic_, 0.0f, 1.0f);
+ImGui::SliderFloat("Ambient", &ambient_, 0.0f, 0.3f);
+ImGui::Combo("View", &viewMode_, kViewModes, IM_ARRAYSIZE(kViewModes));
+ImGui::Checkbox("Show probe arrows (N, N', T, B)", &showArrows_);
+
+@
+<<Controls of the shaders>>=
+ImGui::SeparatorText("Shaders");
+if (ImGui::Button("Reload shaders (F5)")) ReloadShaders();
+ImGui::SameLine();
+ImGui::TextColored(shadersOk_ ? ImVec4(0.4f, 0.9f, 0.4f, 1) : ImVec4(1, 0.4f, 0.4f, 1),
+                   shadersOk_ ? "OK" : "compile error");
+if (!shaderLog_.empty()) ImGui::TextWrapped("%s", shaderLog_.c_str());
+
+@ \emph{Map images and the probe.} Every image of a map in the interface---the small
+tiles and the large view in the inspector---is drawn by this function, which also turns
+the mouse position into texture coordinates. If the image occupies the screen rectangle
+with top-left corner $\vect m$ and size $(W,H)$, the mouse at $\vect p$ points at
+\[ (u,v) = \Bigl(\frac{p_x-m_x}{W},\ \frac{p_y-m_y}{H}\Bigr), \]
+clamped to the unit square. Since screen $y$ grows downwards, like $v$, no flip is needed:
+one more reason for the Direct3D convention.
+
+<<Functions of the application>>=
+void App::MapImage(MapKind kind, const ImVec2& size) {
+    const auto& map = Current().maps[kind];
+    if (!map) {
+        ImGui::Button("not available", size);
+        return;
+    }
+    ImGui::Image(Tex(map->srvLinear.Get()), size);
+    const ImVec2 mn = ImGui::GetItemRectMin();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    <<Update the probe from the mouse>>
+    <<Draw the crosshair of the probe>>
+}
+
+@ Hovering moves an unpinned probe; a left click pins it at the mouse; a right click
+releases it; a double click also makes this map the one shown large in the inspector.
+
+<<Update the probe from the mouse>>=
+if (ImGui::IsItemHovered()) {
+    const ImVec2 mp = ImGui::GetMousePos();
+    const XMFLOAT2 uv{std::clamp((mp.x - mn.x) / size.x, 0.0f, 1.0f), std::clamp((mp.y - mn.y) / size.y, 0.0f, 1.0f)};
+    hoveredThisFrame_ = true;
+    if (!pinned_) {
+        probeUV_ = uv;
+        probeValid_ = true;
+    }
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        probeUV_ = uv;
+        probeValid_ = pinned_ = true;
+    }
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) pinned_ = false;
+    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) inspected_ = kind;
+}
+
+@ The crosshair is drawn on \emph{every} map image, not only on the hovered one, so that
+the eye can compare the colour, the height and the roughness at the same texel. A dark
+line under a light one keeps it visible on any image; magenta means pinned.
+
+<<Draw the crosshair of the probe>>=
+// Crosshair at the probe position, mirrored on every map image.
+if (probeValid_) {
+    const ImVec2 p(mn.x + probeUV_.x * size.x, mn.y + probeUV_.y * size.y);
+    const ImU32 col = pinned_ ? IM_COL32(255, 60, 200, 255) : IM_COL32(255, 255, 255, 220);
+    dl->AddLine(ImVec2(p.x, mn.y), ImVec2(p.x, mn.y + size.y), IM_COL32(0, 0, 0, 120), 3);
+    dl->AddLine(ImVec2(mn.x, p.y), ImVec2(mn.x + size.x, p.y), IM_COL32(0, 0, 0, 120), 3);
+    dl->AddLine(ImVec2(p.x, mn.y), ImVec2(p.x, mn.y + size.y), col);
+    dl->AddLine(ImVec2(mn.x, p.y), ImVec2(mn.x + size.x, p.y), col);
+    dl->AddCircle(p, 5, col, 0, 2);
+}
+
+@ \emph{The ``Maps'' panel} shows the five maps as tiles, three per row, as large as the
+panel allows. Clicking a tile selects it for the inspector.
+
+<<Functions of the application>>=
+void App::UiMaps() {
+    ImGui::Begin("Maps");
+    const Material& m = Current();
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const float sp = ImGui::GetStyle().ItemSpacing.y, line = ImGui::GetTextLineHeightWithSpacing();
+    const float tile = std::max(64.0f, std::min((avail.x - 2 * ImGui::GetStyle().ItemSpacing.x) / 3,
+                                                (avail.y - 4 * line - 2 * sp) / 2));
+    const MapKind kinds[] = {MapColor, MapBump, MapDisplacement, MapRoughness, MapNormal};
+    for (int i = 0; i < 5; ++i) {
+        if (i % 3) ImGui::SameLine();
+        ImGui::BeginGroup();
+        ImGui::PushID(i);
+        const bool sel = inspected_ == kinds[i];
+        std::string label = MapName(kinds[i]);
+        if (kinds[i] == MapBump && m.bumpFromHeight) label += " (from height)";
+        if (sel) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 0.8f, 0.3f, 1));
+        ImGui::TextUnformatted(label.c_str());
+        if (sel) ImGui::PopStyleColor();
+        MapImage(kinds[i], ImVec2(tile, tile));
+        if (ImGui::IsItemClicked() || (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Middle)))
+            inspected_ = kinds[i];
+        ImGui::PopID();
+        ImGui::EndGroup();
+    }
+    ImGui::TextDisabled("Hover a map to probe it. Left-click pins the probe, right-click unpins.\n"
+                        "The selected map is shown large in the Inspector.");
+    ImGui::End();
+}
+
+@ \emph{The ``Inspector'' panel} is where the program answers the student's question. It
+shows one map large, so that individual texels can be aimed at, and next to it every
+result of <<Inspect one texel>>.
+
+<<Functions of the application>>=
+void App::UiInspector() {
+    ImGui::Begin("Inspector");
+    const Material& m = Current();
+    <<Choose the map to inspect>>
+    <<Show the inspected map, beside or above the readouts>>
+
+    const HoverInfo& h = info_;
+    if (!h.valid) {
+        ImGui::TextDisabled("Move the mouse over a map\nto inspect it.");
+    } else {
+        <<Show the values of the maps at the probe>>
+
+        <<Show the normals at the probe>>
+    }
+    ImGui::EndGroup();
+    ImGui::End();
+}
+
+@
+<<Choose the map to inspect>>=
+if (ImGui::BeginCombo("Map", MapName(inspected_))) {
+    for (int k = 0; k < MapCount; ++k)
+        if (ImGui::Selectable(MapName(MapKind(k)), inspected_ == k)) inspected_ = MapKind(k);
+    ImGui::EndCombo();
+}
+
+@ The readouts need about 24 characters' width; if the panel is too narrow for the image
+and the readouts side by side, they are stacked.
+
+<<Show the inspected map, beside or above the readouts>>=
+// Large map on the left with the readouts beside it; stacked if the panel is narrow.
+const ImVec2 avail = ImGui::GetContentRegionAvail();
+const float readoutWidth = 24 * ImGui::GetFontSize();
+const bool sideBySide = avail.x - readoutWidth >= 200;
+const float side = sideBySide ? std::max(128.0f, std::min(avail.x - readoutWidth, avail.y - 8))
+                              : std::max(128.0f, std::min(avail.x, avail.y * 0.38f));
+MapImage(inspected_, ImVec2(side, side));
+if (sideBySide) ImGui::SameLine();
+ImGui::BeginGroup();
+
+@ First the plain values: the coordinates in normalized texture space and in texels, and
+the value of each map.
+
+<<Show the values of the maps at the probe>>=
+ImGui::Text("Probe %s", pinned_ ? "(pinned - right-click a map to release)" : "(hover)");
+if (ImGui::BeginTable("vals", 3, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn(); ImGui::TextUnformatted("u, v");
+    ImGui::TableNextColumn(); ImGui::Text("(%.4f, %.4f)", h.uv.x, h.uv.y);
+    ImGui::TableNextColumn();
+    const auto& c = m.maps[MapColor];
+    if (c) ImGui::Text("texel (%d, %d)", int(h.uv.x * c->width), int(h.uv.y * c->height));
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn(); ImGui::TextUnformatted("Color (sRGB)");
+    ImGui::TableNextColumn(); ImGui::Text("(%.3f, %.3f, %.3f)", h.color.x, h.color.y, h.color.z);
+    ImGui::TableNextColumn();
+    ImGui::ColorButton("##c", ImVec4(h.color.x, h.color.y, h.color.z, 1), ImGuiColorEditFlags_NoTooltip, ImVec2(36, 0));
+    ScalarRow("Bump value", h.bump, "Height used only to tilt the shading normal.");
+    ScalarRow("Displacement", h.displacement, "Height used to move vertices along the normal.");
+    ScalarRow("Spec. roughness", h.roughness, "0 = mirror-like, 1 = fully rough (GGX alpha = r^2).");
+    ImGui::EndTable();
+}
+
+@ Then the normals, in the order of the derivation of \S\ref{bumpnormal}: the slope, the
+tangent-space normal, and its world-space version together with the frame that produced
+it.
+
+For comparison the panel also decodes the material's own normal map,
+$\vect n = 2\,\mathit{rgb}-1$. The material's authors computed it from a high-resolution
+model with their own strength, so the numbers differ from ours; but the \emph{direction}
+in which it leans agrees with the one computed from the bump map, which is a good check
+that our convention for $\vect B$ matches the DirectX one.
+
+<<Show the normals at the probe>>=
+ImGui::SeparatorText("Normal computed from the bump map");
+ImGui::Text("slope dh/dx = %+.4f, dh/dy = %+.4f  (per texel)", h.slope.x, h.slope.y);
+ImGui::TextDisabled("n_ts = normalize(-k*dh/dx, -k*dh/dy, 1),  k = %.1f", bump_.strength);
+if (ImGui::BeginTable("normals", 3, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
+    Vec3Row("Tangent space n_ts", h.normalTangent, true,
+            "Relative to the surface: x along T (+u), y along B (+v), z along N.\nSwatch = n*0.5+0.5.");
+    if (m.maps[MapNormal]) {
+        const XMFLOAT4 t = m.maps[MapNormal]->Sample(h.uv.x, h.uv.y);
+        XMFLOAT3 pn;
+        XMStoreFloat3(&pn, XMVector3Normalize(XMVectorSet(t.x * 2 - 1, t.y * 2 - 1, t.z * 2 - 1, 0)));
+        Vec3Row("Pack normal map", pn, true,
+                "Decoded from the material's own (DirectX convention) normal map, for comparison.\n"
+                "It was baked with a different strength, so only the direction trend matches.");
+    }
+    if (h.onSurface) {
+        Vec3Row("World n' (bumped)", h.normalBumped, true, "n' = T*n_ts.x + B*n_ts.y + N*n_ts.z, rotated to world.");
+        Vec3Row("World N (geometric)", h.normalGeom, true, "Normal of the shape itself, without bump.");
+        Vec3Row("World T (dP/du)", h.tangent, false, "Tangent: direction of increasing u.");
+        Vec3Row("World B (dP/dv)", h.bitangent, false, "Bitangent: direction of increasing v.");
+        Vec3Row("World position", h.position, false, "Displaced surface point (magenta ring in 3D).");
+    }
+    ImGui::EndTable();
+}
+if (!h.onSurface)
+    ImGui::TextDisabled("This uv is not on the %s's main UV chart.", ShapeName(shape_));
+
+@ \emph{The ``Viewport'' panel} shows the 3D scene. Its size decides the size of the
+off-screen image, so the image always fills the panel exactly.
+
+<<Functions of the application>>=
+void App::UiViewport() {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Begin("Viewport");
+    ImGui::PopStyleVar();
+    const ImVec2 size = ImGui::GetContentRegionAvail();
+    const UINT w = UINT(std::max(1.0f, size.x)), h = UINT(std::max(1.0f, size.y));
+
+    <<Compute the camera matrices>>
+
+    <<Fill the frame constants>>
+
+    <<Collect the lines of the light marker and the probe arrows>>
+
+    <<Show the rendered image>>
+
+    <<Orbit the camera and the light with the mouse>>
+
+    <<Draw the legend over the image>>
+    ImGui::End();
+}
+
+@ The view matrix looks from the eye at the origin with $y$ up; the projection has a
+vertical field of view of $45^\circ$ and the aspect ratio of the panel. Both are the
+right-handed variants, in agreement with \S\ref{conventions}.
+
+<<Compute the camera matrices>>=
+const XMFLOAT3 eye = camera_.Eye();
+const XMFLOAT3 lp = light_.Position();
+const XMMATRIX view = XMMatrixLookAtRH(XMLoadFloat3(&eye), XMVectorZero(), XMVectorSet(0, 1, 0, 0));
+const XMMATRIX proj = XMMatrixPerspectiveFovRH(XMConvertToRadians(45), float(w) / float(h), 0.05f, 100.0f);
+
+@ Every field of the constant buffer is set here, from the state of the application.
+Two details: a map is used only if it is switched on \emph{and} present; and the mipmap
+level for the displacement is chosen as explained in
+<<The vertex shader: displacement mapping>>.
+
+<<Fill the frame constants>>=
+const Material& m = Current();
+FrameConstants fc{};
+XMStoreFloat4x4(&fc.world, World());
+XMStoreFloat4x4(&fc.viewProj, view * proj);
+fc.cameraPos = eye;
+fc.lightPos = lp;
+fc.lightIntensity = light_.intensity;
+fc.lightColor = {light_.color[0], light_.color[1], light_.color[2]};
+fc.bumpStrength = bump_.strength;
+fc.dispScale = bump_.displacementScale;
+fc.dispMid = bump_.displacementMid;
+// Sample the height at a mip whose resolution matches the mesh grid (avoids aliasing).
+const auto& disp = m.maps[MapDisplacement];
+fc.dispLod = disp ? std::max(0.0f, std::log2(float(disp->width) / Renderer::kMeshSegments)) : 0;
+fc.metallic = metallic_;
+fc.ambient = ambient_;
+fc.viewMode = viewMode_;
+fc.useColor = useColor_ && m.maps[MapColor];
+fc.useBump = useBump_ && m.maps[MapBump];
+fc.useDisp = bump_.useDisplacement && disp;
+fc.useRough = useRough_ && m.maps[MapRoughness];
+fc.constRoughness = constRough_;
+fc.hoverUV = info_.uv;
+fc.hoverOn = info_.valid ? 1.0f : 0.0f;
+
+@ The arrows of the probe start at the (displaced) surface point. Their colours follow a
+tradition: red, green and blue for the axes $\vect T$, $\vect B$ and---well, the normal
+gets yellow for the geometric one and cyan for the bumped one, so that the two can be
+told apart when they nearly coincide.
+
+<<Collect the lines of the light marker and the probe arrows>>=
+std::vector<LineVertex> lines;
+// Light marker: three small circles.
+const XMFLOAT4 lc{1, 0.9f, 0.3f, 1};
+AddCircle(lines, lp, XMVectorSet(1, 0, 0, 0), XMVectorSet(0, 1, 0, 0), 0.08f, lc);
+AddCircle(lines, lp, XMVectorSet(0, 1, 0, 0), XMVectorSet(0, 0, 1, 0), 0.08f, lc);
+AddCircle(lines, lp, XMVectorSet(1, 0, 0, 0), XMVectorSet(0, 0, 1, 0), 0.08f, lc);
+if (showArrows_ && info_.onSurface) {
+    const XMVECTOR p = XMLoadFloat3(&info_.position);
+    AddArrow(lines, p, XMLoadFloat3(&info_.normalGeom), 0.45f, {1, 0.85f, 0.1f, 1});    // N
+    AddArrow(lines, p, XMLoadFloat3(&info_.normalBumped), 0.55f, {0.2f, 0.95f, 1, 1});  // N'
+    AddArrow(lines, p, XMLoadFloat3(&info_.tangent), 0.25f, {1, 0.25f, 0.25f, 1});      // T
+    AddArrow(lines, p, XMLoadFloat3(&info_.bitangent), 0.25f, {0.3f, 1, 0.3f, 1});      // B
+}
+
+@ If the scene could not be drawn, the panel shows the compiler's messages instead, and an
+invisible button takes the place of the image so that the mouse code below still works.
+
+<<Show the rendered image>>=
+ID3D11ShaderResourceView* img = renderer_.RenderScene(w, h, fc, m, shape_, lines);
+if (img) {
+    ImGui::Image(Tex(img), ImVec2(float(w), float(h)));
+} else {
+    ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "Shaders not available:\n%s", shaderLog_.c_str());
+    ImGui::InvisibleButton("vp", ImVec2(float(w), float(h)));
+}
+
+@ Dragging changes the angles in proportion to the mouse movement; the wheel changes the
+distance by a constant \emph{factor} per notch, which feels uniform at every distance.
+Pitch and elevation stop just short of the poles, where the ``up'' vector of the view
+would be parallel to the direction of view.
+
+<<Orbit the camera and the light with the mouse>>=
+// Mouse interaction
+if (ImGui::IsItemHovered()) {
+    ImGuiIO& io = ImGui::GetIO();
+    if (ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0)) {
+        camera_.yaw -= io.MouseDelta.x * 0.008f;
+        camera_.pitch = std::clamp(camera_.pitch + io.MouseDelta.y * 0.008f, -1.55f, 1.55f);
+    }
+    if (ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0)) {
+        light_.azimuth -= io.MouseDelta.x * 0.01f;
+        light_.elevation = std::clamp(light_.elevation + io.MouseDelta.y * 0.01f, -1.55f, 1.55f);
+    }
+    if (io.MouseWheel != 0)
+        camera_.distance = std::clamp(camera_.distance * std::pow(0.9f, io.MouseWheel), 1.5f, 12.0f);
+}
+camera_.yaw = std::remainder(camera_.yaw, 2 * kPi);
+light_.azimuth = std::remainder(light_.azimuth, 2 * kPi);
+
+@ A legend names what is on the screen and reminds the user of the mouse controls.
+
+<<Draw the legend over the image>>=
+// Legend overlay
+const ImVec2 o = ImGui::GetItemRectMin();
+ImDrawList* dl = ImGui::GetWindowDrawList();
+float y = o.y + 8;
+auto legend = [&](ImU32 col, const char* text) {
+    dl->AddRectFilled(ImVec2(o.x + 10, y + 4), ImVec2(o.x + 22, y + 10), col);
+    dl->AddText(ImVec2(o.x + 28, y), IM_COL32(230, 230, 230, 255), text);
+    y += 17;
+};
+char title[160];
+snprintf(title, sizeof(title), "%s on %s  |  %s", m.name.c_str(), ShapeName(shape_), kViewModes[viewMode_]);
+dl->AddText(ImVec2(o.x + 10, y), IM_COL32(255, 255, 255, 255), title);
+y += 20;
+if (showArrows_ && info_.onSurface) {
+    legend(IM_COL32(255, 217, 25, 255), "N  geometric normal");
+    legend(IM_COL32(51, 242, 255, 255), "N' normal from bump map");
+    legend(IM_COL32(255, 64, 64, 255), "T  tangent (+u)");
+    legend(IM_COL32(77, 255, 77, 255), "B  bitangent (+v)");
+}
+legend(IM_COL32(255, 230, 77, 255), "light");
+dl->AddText(ImVec2(o.x + 10, o.y + size.y - 22), IM_COL32(180, 180, 180, 255),
+            "Left-drag: orbit camera   Right-drag: orbit light   Wheel: zoom   Space: rotate object");
+
+@ \emph{The ``Concepts'' panel} contains, in a few paragraphs, the theory that this document
+develops at length. Each paragraph ends with something to try in the program.
+
+<<Functions of the application>>=
+void App::UiConcepts() {
+    ImGui::Begin("Concepts");
+    auto section = [](const char* title, const char* body) {
+        if (ImGui::CollapsingHeader(title)) {
+            ImGui::PushTextWrapPos(0);
+            ImGui::TextUnformatted(body);
+            ImGui::PopTextWrapPos();
+        }
+    };
+    <<Explanations of the concepts>>
+    ImGui::End();
+}
+
+@
+<<Explanations of the concepts>>=
+section("UV space",
+        "Every vertex stores a texture coordinate (u,v). Normalized texture space runs from (0,0) at the "
+        "top-left texel corner to (1,1) at the bottom-right (Direct3D convention: v grows downwards). "
+        "The rasterizer interpolates uv across each triangle and the pixel shader samples the textures "
+        "there. Choose the 'UV coordinates' view to see the mapping; notice how the sphere stretches "
+        "u around its equator and pinches it at the poles, and how the pyramid gives each face a quarter "
+        "of the texture.");
+section("Bump mapping",
+        "A bump map is a height field h(u,v). It does NOT move geometry: the shader only tilts the "
+        "normal according to the slope of h. With central differences, dh/dx = (h(x+1)-h(x-1))/2, and the "
+        "surface z = k*h has tangent-space normal n_ts = normalize(-k*dh/dx, -k*dh/dy, 1). Flat areas give "
+        "(0,0,1). Turn displacement off and look at the silhouette: it stays perfectly smooth.");
+section("Tangent space and TBN",
+        "Tangent space is a frame attached to the surface: T points to +u, B to +v and N is the geometric "
+        "normal. The matrix [T B N] converts a tangent-space normal to object/world space: "
+        "n' = T*n.x + B*n.y + N*n.z. That is why the same bump map works on any shape. The Inspector "
+        "shows n_ts and the resulting world-space n' for the probed texel; the cyan arrow is n'.");
+section("Normal maps",
+        "A normal map stores n_ts directly as a color (rgb = n*0.5+0.5), precomputed from a height map or "
+        "a high-poly model. Mostly bluish because flat areas are (0,0,1). Conventions differ in the sign of "
+        "green (OpenGL vs DirectX). The 'Pack normal map' row in the Inspector decodes the material's own "
+        "map so you can compare it with the one computed from the bump map.");
+section("Displacement mapping",
+        "Displacement really moves the surface: each vertex is pushed along its normal by "
+        "scale*(h - mid). It changes silhouettes and self-occlusion, but needs dense geometry (here a "
+        "256x256 grid per patch). The shading normal does not change unless a bump/normal map is also used, "
+        "which is why both are usually combined. Note the cracks on the pyramid edges and cylinder rims: "
+        "vertices shared by faces with different normals are pushed in different directions.");
+section("Specular roughness",
+        "The roughness map controls the microfacet distribution of the GGX/Cook-Torrance BRDF "
+        "(alpha = r^2). Low values give small, sharp highlights; high values spread the highlight "
+        "into a dull sheen. Orbit the light and compare shiny and rough regions of the same material.");

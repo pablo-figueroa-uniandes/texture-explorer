@@ -1,0 +1,88 @@
+% lpweb.sty -- typesetting for webs woven by lp.ps1, after the style of Knuth's WEB/CWEB:
+% numbered sections, named modules <Name n> = , "This code is used in section ...",
+% bold keywords, comments in italic roman, and an index of module names.
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{lpweb}[2026/10/07 literate programming style]
+
+\RequirePackage[T1]{fontenc}
+\RequirePackage{lmodern}
+\RequirePackage[a4paper,margin=2.1cm,headheight=14pt]{geometry}
+\RequirePackage{amsmath,amssymb}
+\RequirePackage{xcolor}
+\RequirePackage{fancyhdr}
+\RequirePackage[colorlinks,linkcolor={black!60!blue},urlcolor={black!60!blue}]{hyperref}
+
+\setlength{\parindent}{1.2em}
+\setlength{\parskip}{0pt}
+% Room for three-digit section numbers in the table of contents.
+\renewcommand\l@section{\@dottedtocline{1}{0pt}{2.6em}}
+\frenchspacing
+\setlength{\emergencystretch}{3em}  % long identifiers in the commentary
+
+% Running heads: the current starred section on the left, the program name on the right.
+\newcommand\LPprogram{TEXTURE EXPLORER}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\textsc{\leftmark}}
+\fancyhead[R]{\small\LPprogram\quad\textbf{\thepage}}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ---------------------------------------------------------------- sections
+% A counter makes \label{...} in the commentary refer to the current section number.
+\newcounter{LPsection}
+\newcommand\LPsetsection[1]{\setcounter{LPsection}{#1}\addtocounter{LPsection}{-1}\refstepcounter{LPsection}}
+\newcommand\LPsec[1]{%
+  \par\addvspace{1.2ex plus .5ex}\noindent
+  \LPsetsection{#1}\hypertarget{lp.#1}{}\textbf{#1.}\quad\ignorespaces}
+\newcommand\LPstar[2]{%
+  \par\clearpage\noindent
+  \LPsetsection{#1}\hypertarget{lp.#1}{}%
+  \addcontentsline{toc}{section}{\protect\numberline{#1}#2}%
+  \markboth{#2}{#2}%
+  {\large\bfseries #1.\quad #2.}\par\medskip\noindent\ignorespaces}
+
+% ---------------------------------------------------------------- code parts
+\newcommand\LPinline[1]{\texttt{#1}}
+\newcommand\LPkw[1]{\textbf{#1}}
+\newcommand\LPcm[1]{{\rmfamily\itshape #1}}
+\newcommand\LPstr[1]{#1}
+\newcommand\LPcont{{\rmfamily$\hookrightarrow$}}
+\newcommand\LPname[2]{%
+  $\langle$\,{\rmfamily\itshape #1}\ {\rmfamily\upshape\hyperlink{lp.#2}{#2}}\,$\rangle$}
+\newcommand\LPfile[2]{%
+  $\langle$\,{\rmfamily\upshape File} \texttt{#1}\ {\rmfamily\upshape\hyperlink{lp.#2}{#2}}\,$\rangle$}
+
+\newenvironment{LPcode}{%
+  \par\smallskip
+  \begingroup\parindent=0pt\parskip=0pt\leftskip=1.5em
+  \small\ttfamily\hyphenchar\font=-1 }{%
+  \par\endgroup}
+\newcommand\LPdef[2]{\noindent\hbox{\rmfamily #1\ $#2\!\equiv$}\par\nobreak}
+% One typeset code line; lines are kept whole and folded beforehand by lp.ps1.
+\newcommand\LPl[1]{\noindent\hbox{\strut #1}\par}
+\newcommand\LPnote[1]{\par\nobreak\vspace{.3ex}{\footnotesize\noindent\hspace*{1.5em}#1\par}}
+
+% ---------------------------------------------------------------- front matter, index
+\newcommand\LPfrontmatter{%
+  \thispagestyle{empty}\maketitle\thispagestyle{empty}
+  \begingroup\small\tableofcontents\endgroup
+  \vfill
+  \noindent\begin{minipage}{\textwidth}\footnotesize
+  \textbf{How to read this document.} The program is presented in numbered sections, each
+  with an informal commentary and (usually) a piece of code. A piece of code may refer to a
+  \emph{module} by name, written \LPname{Name}{n}; the number $n$ is the section where that
+  module is defined, and the module's text belongs where its name appears. ``$+\!\equiv$''
+  marks a continuation of a module defined earlier. Modules named
+  \LPfile{path}{n} are complete files: running \texttt{lp.ps1 tangle} produces them, and
+  \texttt{lp.ps1 check} confirms that they are identical to the files of the project.
+  Keywords are in \textbf{bold type}, comments in \textit{italic}, and the sign
+  \LPcont{} continues a long line.
+  \end{minipage}}
+\newcommand\LPindexstart{%
+  \par\clearpage\phantomsection\addcontentsline{toc}{section}{Names of the modules}%
+  \markboth{Names of the modules}{Names of the modules}%
+  {\large\bfseries Names of the modules.}\par\medskip
+  \begingroup\small\parindent=0pt\parskip=2pt\raggedright}
+\newcommand\LPindexentry[2]{\hangindent=2em #1\quad #2\par}
+\newcommand\LPindexend{\endgroup}
+\endinput
