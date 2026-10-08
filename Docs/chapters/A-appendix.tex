@@ -1,0 +1,55 @@
+\chapter{The materials}
+\label{app:materials}
+
+All ten materials are released under the Creative Commons CC0~1.0 licence (public domain
+dedication), which allows any use without attribution; the program and this guide credit them
+anyway. Each material is used at 1K resolution ($1024\times1024$).
+
+\begin{table}[ht]
+\centering\small
+\begin{tabularx}{\linewidth}{@{}llX@{}}
+\toprule
+\textbf{Material} & \textbf{Source} & \textbf{Page}\\
+\midrule
+Bricks 076 C      & ambientCG  & \url{https://ambientcg.com/view?id=Bricks076C}\\
+Wood 066          & ambientCG  & \url{https://ambientcg.com/view?id=Wood066}\\
+Rock 030          & ambientCG  & \url{https://ambientcg.com/view?id=Rock030}\\
+Metal 032         & ambientCG  & \url{https://ambientcg.com/view?id=Metal032}\\
+Tiles 101         & ambientCG  & \url{https://ambientcg.com/view?id=Tiles101}\\
+Fabric 048        & ambientCG  & \url{https://ambientcg.com/view?id=Fabric048}\\
+Paving Stones 131 & ambientCG  & \url{https://ambientcg.com/view?id=PavingStones131}\\
+Castle Brick 07   & Poly Haven (Rob Tuytel) & \url{https://polyhaven.com/a/castle_brick_07}\\
+Aerial Rocks 02   & Poly Haven (Rob Tuytel) & \url{https://polyhaven.com/a/aerial_rocks_02}\\
+Bark Willow 02    & Poly Haven (Charlotte Baglioni) & \url{https://polyhaven.com/a/bark_willow_02}\\
+\bottomrule
+\end{tabularx}
+\caption{The materials of Texture Explorer and their origin.}
+\end{table}
+
+\chapter{Building this document}
+\label{app:build}
+
+The sources of this guide are in the \file{Docs} folder of the repository:
+\begin{description}[font=\normalfont\ttfamily]
+\item[guide.tex] the main file, with the preamble and the list of chapters;
+\item[chapters/] one file per chapter;
+\item[figures/] screenshots of the program (the diagrams are drawn with TikZ and pgfplots in
+the chapters themselves);
+\item[excerpts.txt] the list of code excerpts: for each, a source file and a regular expression
+for its first line;
+\item[build.ps1] the build script.
+\end{description}
+The build script first extracts each excerpt from the current sources into \file{build/excerpts},
+following the braces of the function or structure that starts at the matching line. It then runs
+\code{latexmk}, \code{pdflatex} or \code{tectonic}, whichever it finds, and writes
+\file{TextureExplorer-Guide.pdf}:
+\begin{lstlisting}[language={},numbers=none,basicstyle=\ttfamily\small]
+powershell -ExecutionPolicy Bypass -File Docs\build.ps1
+powershell -ExecutionPolicy Bypass -File Docs\build.ps1 -TeX C:\tools\tectonic.exe
+\end{lstlisting}
+Because the listings are extracted at build time, the guide always shows the code as it is. If a
+function is renamed, the build stops with an error that names the excerpt to fix.
+
+The repository also contains, in \file{LiterateP}, the complete program written as a literate
+program in the style of Donald Knuth, from which every source file can be regenerated. That
+document follows the code; this one follows the theory.

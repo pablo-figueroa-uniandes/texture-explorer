@@ -1,0 +1,58 @@
+\chapter{The shaders}
+\label{ch:shaders}
+
+The GPU work is done by two short HLSL programs in \file{shaders/pbr.hlsl}. The program compiles
+them at start-up and whenever the user presses F5, so students can edit the file while the
+program runs. If a modified shader does not compile, the program keeps the previous version and
+shows the compiler's messages in the Scene panel.
+
+\section{The constant buffer}
+All per-frame parameters travel in one constant buffer. HLSL packs constant buffers in rows of
+16 bytes and does not let a vector straddle two rows, so the declaration is arranged in groups of
+four scalars:
+
+\excerpt{cbuffer}
+
+The C++ structure that fills it must have exactly the same layout; a \code{static\_assert}
+checks the most common mistake, a size that is not a multiple of 16:
+
+\excerpt{frameconstants}
+
+DirectXMath stores matrices by rows and multiplies row vectors on the left, $\vect p'=\vect pM$.
+Declaring the HLSL matrices \code{row\_major} and writing \code{mul(p, M)} follows the same
+convention, so no transposition is needed.
+
+\section{Vertex shader: displacement}
+\label{sec:vs}
+The vertex shader is equation~\eqref{eq:displace}. It samples the displacement map at the mipmap
+level \code{dispLod} chosen on the CPU (Chapter~\ref{ch:sampling}), moves the vertex along its
+normal, and transforms position, normal and tangent to the world. It does \emph{not} recompute
+the normal (Section~\ref{sec:displacement}).
+
+\excerpt{vsmain}
+
+\section{The bump normal on the GPU}
+This is equation~\eqref{eq:nts} again, written to match the C++ version line by line:
+
+\excerpt{bumpnormalts}
+
+\section{Pixel shader: bump mapping and lighting}
+The pixel shader proceeds in the order of the theory chapters:
+\begin{enumerate}
+\item Rebuild an orthonormal frame from the interpolated normal and tangent (Gram--Schmidt), and
+the bitangent from the stored sign (Chapter~\ref{ch:tangent}).
+\item Compute $\nts$ from the bump map and transform it with the TBN matrix.
+\item Read the albedo (decoded from sRGB by the view) and the roughness, or the neutral values
+chosen in the interface when a map is switched off.
+\item Either output a debug view or evaluate the GGX/Cook--Torrance model of
+Chapter~\ref{ch:lighting}, with the horizon factor.
+\item Draw a magenta ring around the probed texel, in texture space.
+\end{enumerate}
+
+\excerpt{psmain}
+
+Two details deserve a comment. The debug views write values such as $\frac12\vect n+\frac12$
+that must reach the screen unchanged, but the render target encodes everything as sRGB; the
+shader therefore applies the approximate inverse, $c^{2.2}$, beforehand. And the roughness is
+clamped to at least $0.04$, because a perfectly smooth GGX surface has an infinitely thin
+highlight that a point light cannot show.

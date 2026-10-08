@@ -1,0 +1,235 @@
+\chapter{Height fields: displacement, bump and normal maps}
+\label{ch:height}
+
+A grey image $h(u,v)\in[0,1]$ can describe the relief of a surface: light texels are high,
+dark texels are low. Such an image is a \emph{height field}, and there are two very different
+ways to use it. A \emph{displacement map} moves the surface; a \emph{bump map} leaves the
+surface where it is and only changes the normal used for lighting, so that the surface
+\emph{looks} as if it had been moved. The materials of Texture Explorer come with a height
+map labelled ``displacement'', and the program uses the same image in both roles; switching
+each role on and off separately is the quickest way to understand the difference
+(Figure~\ref{fig:bumpvsdisp}).
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[scale=1.25,
+  hfun/.style={domain=0:6,samples=120,smooth}]
+  % ---- bump mapping
+  \begin{scope}
+    \draw[black!30,dashed,hfun] plot (\x,{0.2*sin(2*\x r)+0.08*sin(5*\x r)});
+    \draw[very thick] (0,0) -- (6,0);
+    \foreach \x in {0.3,0.75,...,5.9} {
+      \pgfmathsetmacro{\d}{0.4*cos(2*\x r)+0.4*cos(5*\x r)}
+      \pgfmathsetmacro{\nx}{-\d/sqrt(1+\d*\d)}
+      \pgfmathsetmacro{\ny}{1/sqrt(1+\d*\d)}
+      \draw[-{Stealth},npcolor,thick] (\x,0) -- ++(0.7*\nx,0.7*\ny);
+    }
+    \node[font=\small] at (3,-0.55) {\textbf{bump mapping}: the surface stays flat; only the normals tilt, following the slope of $h$ (dashed)};
+  \end{scope}
+  % ---- displacement mapping
+  \begin{scope}[shift={(0,-2.3)}]
+    \draw[very thick,hfun] plot (\x,{0.2*sin(2*\x r)+0.08*sin(5*\x r)});
+    \draw[black!30,dashed] (0,0) -- (6,0);
+    \foreach \x in {0.3,0.75,...,5.9} {
+      \pgfmathsetmacro{\h}{0.2*sin(2*\x r)+0.08*sin(5*\x r)}
+      \pgfmathsetmacro{\d}{0.4*cos(2*\x r)+0.4*cos(5*\x r)}
+      \pgfmathsetmacro{\nx}{-\d/sqrt(1+\d*\d)}
+      \pgfmathsetmacro{\ny}{1/sqrt(1+\d*\d)}
+      \draw[-{Stealth},npcolor,thick] (\x,\h) -- ++(0.7*\nx,0.7*\ny);
+    }
+    \node[font=\small] at (3,-0.55) {\textbf{displacement mapping}: the surface itself moves; silhouette and occlusion change};
+  \end{scope}
+\end{tikzpicture}
+\caption{The same height field (here a sum of two sines) used in its two roles, seen in
+cross-section. With bump mapping the normals are exactly those of the displaced surface,
+but they are attached to the undisplaced one.}
+\label{fig:bumpvsdisp}
+\end{figure}
+
+\section{Displacement mapping}
+\label{sec:displacement}
+
+Let $\vect P(u,v)$ be a surface with unit normal $\Nv(u,v)$. Displacing it by the height
+field gives the new surface
+\begin{equation}
+  \label{eq:displace}
+  \vect P'(u,v) = \vect P(u,v) + s\,\bigl(h(u,v)-m\bigr)\,\Nv(u,v),
+\end{equation}
+where $s$ is the \emph{displacement scale}, a length, and $m$ the \emph{mid-level}, the height
+that leaves the surface in place. With the program's default $m=\frac12$, dark texels push the
+surface in and light texels push it out; with $m=0$ the surface only grows.
+
+Displacement mapping was introduced by Cook \cite{cook1984}. On the GPU it is applied per vertex in the vertex shader (Section~\ref{sec:vs}).
+This is the most direct technique and has two consequences worth remembering.
+\begin{itemize}
+\item \emph{The mesh must be dense.} A vertex samples the height field once; detail between
+vertices is lost. Texture Explorer builds every patch as a grid of $256\times256$ cells,
+about $66\,000$ vertices, and samples the height at the matching mipmap level
+(Chapter~\ref{ch:sampling}). Production renderers use hardware tessellation to make the mesh
+dense only where it is needed.
+\item \emph{Normals are not updated.} Moving the vertices does not change the normals that the
+mesh carries. A displaced surface shaded with its old normals has the right silhouette and the
+wrong lighting. The fix is to compute the normal of the displaced surface, which is exactly
+what bump mapping does---which is why displacement and bump (or normal) maps are almost always
+used together.
+\end{itemize}
+
+\paragraph{Cracks.} Equation~\eqref{eq:displace} pushes each point along \emph{its} normal.
+Where a solid has a crease---the edges of the pyramid, the rims of the cylinder---the two
+patches that meet there have different normals, and vertices at the same position move in
+different directions: the surface tears open. Texture Explorer leaves the cracks visible on
+purpose. The usual remedies are to displace along an averaged normal at the crease, or to
+model creases with a small bevel.
+
+\section{Bump mapping}
+\label{sec:bump}
+
+In 1978 James Blinn observed that the appearance of small wrinkles is due almost entirely to
+the way they tilt the normal, not to the way they move the surface \cite{blinn1978}. So we can
+\emph{compute} the normal of the displaced surface \eqref{eq:displace} and use it to shade the
+\emph{undisplaced} one.
+
+\subsection{Blinn's derivation}
+Differentiating \eqref{eq:displace} (and writing $\tilde h = s(h-m)$),
+\[
+  \vect P'_u = \vect P_u + \tilde h_u\,\Nv + \tilde h\,\Nv_u,\qquad
+  \vect P'_v = \vect P_v + \tilde h_v\,\Nv + \tilde h\,\Nv_v .
+\]
+For small bumps $\tilde h$ itself is tiny while its derivatives $\tilde h_u$, $\tilde h_v$ may
+not be (a small but steep groove), so the terms $\tilde h\,\Nv_u$ and $\tilde h\,\Nv_v$ are
+dropped. The normal of the displaced surface is then parallel to
+\[
+  \vect P'_u\times\vect P'_v \approx
+  \vect P_u\times\vect P_v + \tilde h_u\,(\Nv\times\vect P_v) + \tilde h_v\,(\vect P_u\times\Nv),
+\]
+(the term $\tilde h_u\tilde h_v\,\Nv\times\Nv$ vanishes), which is Blinn's perturbed normal.
+
+\subsection{In an orthonormal frame}
+Suppose that, at the point, $\vect P_u = a\,\Tv$ and $\vect P_v = b\,\Bv$ with $\Tv$ and $\Bv$
+orthonormal and perpendicular to $\Nv$. Then $\tilde h_u/a$ is the rate of change of the height
+per unit \emph{length} along $\Tv$, and similarly $\tilde h_v/b$ along $\Bv$. Substituting
+and simplifying---the result is the same whether the frame is right- or left-handed---gives
+\begin{equation}
+  \label{eq:bumpframe}
+  \vect n' \;\propto\; \Nv \;-\; \frac{\tilde h_u}{a}\,\Tv \;-\; \frac{\tilde h_v}{b}\,\Bv .
+\end{equation}
+A geometric argument reaches the same result without cross products, and without worrying
+about handedness. In the frame $(\Tv,\Bv,\Nv)$ the displaced surface is locally the graph
+$z = g(x,y)$, whose tangent vectors are $(1,0,g_x)$ and $(0,1,g_y)$. The vector
+$(-g_x,-g_y,1)$ is perpendicular to both:
+\[
+  (-g_x,-g_y,1)\cdot(1,0,g_x) = -g_x + g_x = 0,\qquad
+  (-g_x,-g_y,1)\cdot(0,1,g_y) = -g_y + g_y = 0 .
+\]
+So the normal leans \emph{against} the slope: where the height increases to the right, the
+normal tilts to the left. On a flat region $g_x=g_y=0$ and the normal is $(0,0,1)$, the
+unperturbed $\Nv$.
+
+\subsection{The formula used in Texture Explorer}
+\label{sec:bumpformula}
+Texture Explorer measures the slope in \emph{texels}: $h_x$ is the change of the bump map per
+texel in the $u$ direction and $h_y$ per texel in the $v$ direction. A single \emph{bump
+strength} $k$, set with a slider, converts it into a slope of the surface. The tangent-space
+normal is
+\begin{equation}
+  \label{eq:nts}
+  \nts = \frac{(-k\,h_x,\ -k\,h_y,\ 1)}{\lVert(-k\,h_x,\ -k\,h_y,\ 1)\rVert}.
+\end{equation}
+Comparing with \eqref{eq:bumpframe}, $k\,h_x$ plays the role of $\tilde h_u/a$, so
+$k = sW/a$ where $W$ is the width of the texture in texels: $k$ hides the displacement scale
+\emph{and} the stretch $a=\lVert\vect P_u\rVert$ of the parametrization. Using one $k$ for the
+whole solid is a deliberate simplification: the bumps look equally deep everywhere, even where
+the texture is stretched, as on the pyramid near its base. A physically exact bump map would
+divide by the local stretch.
+
+\section{Estimating the slope}
+\label{sec:centraldiff}
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[scale=1.1]
+  \draw[black!25] (0,0) grid (3,3);
+  \fill[black!8] (1,1) rectangle (2,2);
+  \node at (1.5,1.5) {$h(x,y)$};
+  \node[tcolor] at (0.5,1.5) {$-$};
+  \node[tcolor] at (2.5,1.5) {$+$};
+  \node[bcolor] at (1.5,2.5) {$-$};
+  \node[bcolor] at (1.5,0.5) {$+$};
+  \node[right,align=left,font=\small] at (3.3,1.5)
+    {$h_x \approx \tfrac12\bigl(h(x{+}1,y)-h(x{-}1,y)\bigr)$\\[4pt]
+     $h_y \approx \tfrac12\bigl(h(x,y{+}1)-h(x,y{-}1)\bigr)$\\[4pt]
+     ($y$, like $v$, grows downwards)};
+\end{tikzpicture}
+\caption{The central-difference stencil. The texel itself does not take part.}
+\label{fig:stencil}
+\end{figure}
+
+The derivatives of the bump map are estimated by \emph{central differences}, one texel to each
+side (Figure~\ref{fig:stencil}). Taylor's theorem shows why they are preferable to the simpler
+forward difference $h(x+1)-h(x)$:
+\[
+  \frac{h(x+1)-h(x-1)}{2} = h'(x) + \frac{h'''(x)}{6} + \dots,\qquad
+  h(x+1)-h(x) = h'(x) + \frac{h''(x)}{2} + \dots
+\]
+The central difference is exact for quadratics and does not shift the normal by half a texel.
+Both the shader and the CPU probe take the four samples with bilinear filtering at offsets of
+exactly one texel, so they agree to rounding error.
+
+\begin{tryit}
+Pin the probe on the edge of a brick. Read the slopes $h_x$, $h_y$ and the tangent-space
+normal in the Inspector and check equation \eqref{eq:nts} by hand: with $k=4$,
+$h_x=0.0038$ and $h_y=0.0093$ give $\nts\approx(-0.015,-0.037,0.999)$. Then change the bump
+strength and watch the cyan arrow $\vect n'$ in the 3D view lean further.
+\end{tryit}
+
+\section{Normal maps}
+\label{sec:normalmaps}
+
+Computing derivatives in the shader costs four texture reads per pixel. A \emph{normal map}
+stores the result instead: each texel holds $\nts$, encoded as a colour by
+\[
+  \mathit{rgb} = \tfrac12\,\nts + \tfrac12,\qquad \nts = 2\,\mathit{rgb}-1 .
+\]
+Because the normals of a mostly flat surface are close to $(0,0,1)$, normal maps have the
+characteristic lavender colour $(0.5,0.5,1)$. They are usually not computed from a height map
+but \emph{baked} from a detailed (``high-poly'') model onto a simple one, and can represent
+details that are not height fields at all, such as overhangs.
+
+Two conventions exist, differing in the sign of the green channel (Section~\ref{sec:uvconv}):
+\emph{DirectX} normal maps store the component along $+v$ with $v$ downwards, \emph{OpenGL}
+ones along $+v$ with $v$ upwards. Using a map of the wrong convention makes the relief look
+lit from below. Texture Explorer's tangent-space $y$ axis is $+v$ downwards, so it decodes the
+DirectX variant directly; the Inspector shows it next to the normal computed from the bump
+map. The numbers differ---the authors of the material baked their map with their own strength
+and from their own high-resolution geometry---but the direction in which the normal leans
+agrees, which is a good check of the conventions.
+
+Normal maps have a subtle filtering problem: averaging unit vectors (as mipmapping does)
+produces shorter vectors, and renormalizing them loses the information that the surface was
+bumpy at that scale. Advanced techniques (Toksvig's, or LEAN mapping) turn that lost length into
+extra roughness.
+
+\section{Summary}
+
+\begin{table}[ht]
+\centering\small
+\begin{tabularx}{\linewidth}{@{}l>{\raggedright}X>{\raggedright}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+ & \textbf{Bump map} & \textbf{Normal map} & \textbf{Displacement map}\\
+\midrule
+Stores & height $h$ & tangent-space normal $\nts$ & height $h$\\
+Changes the shading normal & yes, from the slope of $h$ & yes, directly & no (unless normals are recomputed)\\
+Changes silhouette and occlusion & no & no & yes\\
+Cost & 4 extra samples per pixel & 1 sample per pixel & dense mesh or tessellation\\
+Typical artefacts & flat silhouettes; light leaking on the dark side & same, plus wrong green convention & cracks at creases; swimming if under-sampled\\
+In Texture Explorer & \code{BumpNormalTS} in the pixel shader & shown for comparison only & \code{VSMain} in the vertex shader\\
+\bottomrule
+\end{tabularx}
+\caption{Three ways to use relief in a material.}
+\label{tab:reliefs}
+\end{table}
+
+Bump and normal maps share one more artefact. A perturbed normal may face the light at points
+where the real surface faces away from it, so the dark side of the solid sparkles. Texture
+Explorer attenuates the lighting with a steep ramp of the \emph{geometric} cosine
+$\Nv\cdot\vect L$ (Section~\ref{sec:horizon}), a crude form of self-shadowing.

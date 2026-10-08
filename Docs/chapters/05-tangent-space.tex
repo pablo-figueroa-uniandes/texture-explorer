@@ -1,0 +1,112 @@
+\chapter{Tangent space}
+\label{ch:tangent}
+
+Equation~\eqref{eq:nts} gives the bumped normal in coordinates relative to the surface. To
+light the surface we need it in the same coordinate system as the light and the camera. This
+chapter is about the frame that connects the two, and about transforming normals in general.
+
+\section{The tangent frame}
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[scale=1.6,>={Stealth}]
+  % a curved patch drawn in a simple oblique projection
+  \shade[top color=black!3,bottom color=black!12]
+    (0,0) .. controls (1,0.35) and (2,0.35) .. (3,0)
+    -- (3.8,1.1) .. controls (2.8,1.45) and (1.8,1.45) .. (0.8,1.1) -- cycle;
+  \draw (0,0) .. controls (1,0.35) and (2,0.35) .. (3,0)
+    -- (3.8,1.1) .. controls (2.8,1.45) and (1.8,1.45) .. (0.8,1.1) -- cycle;
+  \coordinate (p) at (1.9,0.68);
+  \fill (p) circle (1.2pt);
+  \draw[->,very thick,tcolor] (p) -- ++(0.9,0.02) node[right] {$\Tv=\vect P_u/\lVert\vect P_u\rVert$};
+  \draw[->,very thick,bcolor] (p) -- ++(-0.38,-0.55) node[below] {$\Bv$ (direction of $+v$)};
+  \draw[->,very thick,ncolor] (p) -- ++(0,1.0) node[above] {$\Nv$};
+  \draw[->,very thick,npcolor] (p) -- ++(-0.35,0.92) node[left] {$\vect n' = \Tv n_x+\Bv n_y+\Nv n_z$};
+\end{tikzpicture}
+\caption{The tangent frame at a point of a surface: $\Tv$ along increasing $u$, $\Bv$
+along increasing $v$, $\Nv$ outwards. A tangent-space vector $(n_x,n_y,n_z)$ is the
+combination $n_x\Tv+n_y\Bv+n_z\Nv$.}
+\label{fig:tbn}
+\end{figure}
+
+At each point of a textured surface we attach three unit vectors (Figure~\ref{fig:tbn}):
+the \emph{tangent} $\Tv$, in the direction of increasing $u$; the \emph{bitangent} $\Bv$
+(sometimes, inaccurately, called the binormal), in the direction of increasing $v$; and the
+normal $\Nv$. A vector with tangent-space coordinates $\nts=(n_x,n_y,n_z)$ is, in object
+coordinates,
+\[
+  \vect n_{\mathrm{obj}} = n_x\,\Tv + n_y\,\Bv + n_z\,\Nv =
+  \underbrace{\begin{pmatrix}\Tv & \Bv & \Nv\end{pmatrix}}_{\text{TBN}}
+  \begin{pmatrix}n_x\\ n_y\\ n_z\end{pmatrix}.
+\]
+This is the famous \emph{TBN matrix}. When its columns are orthonormal, its inverse is its
+transpose, so going back---from object space to tangent space, as some techniques do with the
+light vector---costs three dot products.
+
+The tangent frame is the reason a single bump or normal map works on any shape: the map
+describes the relief \emph{relative to the surface}, and the frame carries it onto whatever
+surface it is applied to.
+
+\section{Building an orthonormal frame}
+
+The derivatives $\vect P_u$ and $\vect P_v$ of a parametrization are tangent to the surface but
+in general neither unit nor perpendicular (think of the pyramid, Chapter~\ref{ch:texspace}).
+Texture Explorer builds an orthonormal frame by the \emph{Gram--Schmidt} process:
+\begin{align*}
+  \Nv &= \text{the unit outward normal},\\
+  \Tv &= \frac{\vect P_u - (\vect P_u\cdot\Nv)\,\Nv}{\lVert\vect P_u - (\vect P_u\cdot\Nv)\,\Nv\rVert},\\
+  \Bv &= \sigma\,(\Nv\times\Tv),\qquad \sigma = \operatorname{sign}\bigl((\Nv\times\Tv)\cdot\vect P_v\bigr).
+\end{align*}
+The sign $\sigma$---stored as the fourth component $w$ of the vertex tangent---records the
+\emph{handedness} of the frame. It is needed because a texture can be applied mirrored; with
+the conventions of this program, \eqref{eq:orientation} gives $\Tv\times\Bv=-\Nv$ and so
+$\sigma=-1$ everywhere. Storing $\Tv$ and $\sigma$ instead of $\Tv$ and $\Bv$ saves two floats
+per vertex.
+
+\paragraph{After interpolation.} The rasterizer interpolates $\Nv$ and $\Tv$ linearly across
+each triangle. Interpolated unit vectors are shorter than one and no longer perpendicular, so the
+pixel shader repeats the Gram--Schmidt step before using them. In production, normal maps are
+baked against a precisely specified tangent frame---the \emph{MikkTSpace} convention
+\cite{mikkelsen2008}---and the renderer must reproduce exactly the same frame, or the baked
+normals come out slightly wrong.
+
+\section{A worked example}
+Take the sphere of Chapter~\ref{ch:texspace} at the centre of the texture, $u=v=\frac12$, so
+$\theta=\pi/2$ and $\varphi=\pi$. Then
+\begin{align*}
+  \vect P &= (-1,0,0) = \Nv,\\
+  \Tv &= (-\sin\varphi,\,0,\,-\cos\varphi) = (0,0,1),\\
+  \Bv &= (\cos\theta\cos\varphi,\,-\sin\theta,\,-\cos\theta\sin\varphi) = (0,-1,0).
+\end{align*}
+Check the orientation: $\Tv\times\Bv = (0,0,1)\times(0,-1,0) = (1,0,0) = -\Nv$. A tangent-space
+normal $\nts = (0.1,\,0,\,0.995)$, leaning towards $+u$, becomes
+\[
+  \vect n' = 0.1\,\Tv + 0.995\,\Nv = (-0.995,\ 0,\ 0.1)
+\]
+in object space: it leans towards $+z$, the direction in which $u$ grows at that point. This is
+exactly what the Inspector shows when the probe is placed there (with the solid not rotated).
+
+\section{Transforming normals}
+\label{sec:normaltransform}
+
+Points and tangent vectors of an object are transformed to the world by its world matrix $M$
+(more precisely, by its upper-left $3\times3$ part for vectors). Normals are different. A normal
+is defined by being perpendicular to all tangent vectors $\vect t$: $\vect n\cdot\vect t = 0$.
+If tangents are transformed as $\vect t' = M\vect t$, the transformed normal must satisfy
+$\vect n'\cdot M\vect t = 0$ for every $\vect t$, which holds for
+\[
+  \vect n' = M^{-\mathsf T}\vect n,\qquad\text{since}\qquad
+  (M^{-\mathsf T}\vect n)\cdot(M\vect t) = \vect n^{\mathsf T}M^{-1}M\vect t = \vect n\cdot\vect t = 0 .
+\]
+For a non-uniform scale, $M^{-\mathsf T}\neq M$ and using $M$ for normals is a classic bug: the
+normals of a squashed sphere would lean the wrong way. For a \emph{rotation},
+$M^{-\mathsf T}=M$, and for a uniform scale they differ only by a factor that normalization
+removes. Texture Explorer's world matrix is a pure rotation about the vertical axis (the
+rotation animation), so it transforms points, tangents and normals with the same matrix.
+
+\begin{tryit}
+Pin the probe, then start the rotation of the object (space bar). The world-space vectors in
+the Inspector change continuously, while the tangent-space normal stays the same: the relief is
+a property of the surface, the world-space normal a property of the surface \emph{and} its
+placement in the world.
+\end{tryit}

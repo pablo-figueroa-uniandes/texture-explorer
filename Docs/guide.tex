@@ -1,0 +1,113 @@
+% Texture Explorer -- a guide to the theory and the code.
+% Build with:  powershell -ExecutionPolicy Bypass -File build.ps1
+% (build.ps1 first extracts the code excerpts from the sources into build/excerpts.)
+\documentclass[11pt,a4paper,openany]{report}
+
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[utf8]{inputenc}
+\usepackage{microtype}
+\usepackage[a4paper,margin=2.4cm,headheight=14pt]{geometry}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{booktabs,tabularx,array}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{listings}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,calc,positioning,shapes.geometric,decorations.pathmorphing,fit,backgrounds}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepackage{fancyhdr}
+\usepackage[colorlinks,linkcolor={black!60!blue},citecolor={black!60!green},urlcolor={black!60!blue}]{hyperref}
+
+% ------------------------------------------------------------------ notation
+\newcommand{\vect}[1]{\mathbf{#1}}
+\newcommand{\Tv}{\vect T}
+\newcommand{\Bv}{\vect B}
+\newcommand{\Nv}{\vect N}
+\newcommand{\nts}{\vect n_{\mathrm{ts}}}
+\newcommand{\dd}[2]{\frac{\partial #1}{\partial #2}}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\file}[1]{\texttt{#1}}
+
+% ------------------------------------------------------------------ colours
+\definecolor{tcolor}{RGB}{220,50,50}
+\definecolor{bcolor}{RGB}{40,160,40}
+\definecolor{ncolor}{RGB}{200,150,0}
+\definecolor{npcolor}{RGB}{0,150,200}
+\definecolor{lcolor}{RGB}{230,170,0}
+\definecolor{kwcolor}{RGB}{0,0,140}
+\definecolor{cmcolor}{RGB}{90,110,90}
+\definecolor{strcolor}{RGB}{150,60,0}
+
+% ------------------------------------------------------------------ code listings
+\lstdefinelanguage{HLSL}[ANSI]{C}{%
+  morekeywords={cbuffer,register,row_major,float2,float3,float4,float4x4,int2,int3,int4,
+    Texture2D,SamplerState,static,const,in,out,inout,uniform,lerp,saturate,mul,normalize,
+    dot,cross,pow,clamp,frac,length,abs,max,min},
+  sensitive=true}
+\lstdefinestyle{excerpt}{%
+  basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\bfseries\color{kwcolor},
+  commentstyle=\itshape\color{cmcolor},
+  stringstyle=\color{strcolor},
+  numbers=left, numberstyle=\tiny\color{gray}, numbersep=6pt,
+  frame=lines, framesep=4pt, rulecolor=\color{black!30},
+  columns=fullflexible, keepspaces=true, showstringspaces=false, tabsize=4,
+  breaklines=true, breakatwhitespace=false,
+  postbreak=\mbox{\textcolor{gray}{$\hookrightarrow$}\space},
+  xleftmargin=1.6em, aboveskip=0.8em, belowskip=0.8em,
+  upquote=true}
+\lstset{style=excerpt}
+\newcommand{\excerpttitle}[3]{\small\sffamily\file{#1}, lines #2--#3}
+% An excerpt of the real source code, extracted by build.ps1 (see excerpts.txt).
+\newcommand{\excerpt}[1]{\input{build/excerpts/#1.tex}}
+
+% ------------------------------------------------------------------ layout
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\nouppercase{\leftmark}}
+\fancyhead[R]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\fancypagestyle{plain}{\fancyhf{}\fancyfoot[C]{\small\thepage}\renewcommand{\headrulewidth}{0pt}}
+\setlength{\parskip}{0.35em}
+\setlength{\emergencystretch}{3em}  % long identifiers in typewriter type
+\captionsetup{font=small,labelfont=bf,margin=1em}
+\setlist{itemsep=0.15em}
+\newenvironment{tryit}{\par\medskip\noindent\begin{minipage}{\linewidth}\color{black!80!blue}\hrule\smallskip\noindent\textbf{Try it in the program.}\ }{\par\smallskip\hrule\end{minipage}\par\medskip}
+
+\title{\Huge\textbf{Texture Explorer}\\[10pt]
+  \LARGE Texture, bump, displacement and roughness maps\\[4pt]
+  \large Theory and implementation of an interactive teaching tool}
+\author{}
+\date{\today}
+
+\begin{document}
+\pagenumbering{roman}
+\maketitle
+\thispagestyle{empty}
+\tableofcontents
+\clearpage
+\pagenumbering{arabic}
+
+\input{chapters/01-introduction}
+\part{Theory}
+\input{chapters/02-texture-space}
+\input{chapters/03-sampling}
+\input{chapters/04-height-fields}
+\input{chapters/05-tangent-space}
+\input{chapters/06-lighting}
+\part{Implementation}
+\input{chapters/07-architecture}
+\input{chapters/08-geometry}
+\input{chapters/09-materials}
+\input{chapters/10-inspector}
+\input{chapters/11-shaders}
+\input{chapters/12-renderer-ui}
+\input{chapters/13-exercises}
+\appendix
+\input{chapters/A-appendix}
+\input{chapters/references}
+\end{document}

@@ -1,0 +1,72 @@
+\chapter{The renderer and the user interface}
+\label{ch:renderer}
+
+\section{Shaders that can be reloaded}
+\code{ReloadShaders} compiles the four entry points from their files with
+\code{D3DCompileFromFile}, collecting the compiler's messages in a log. It creates the new
+shader objects and input layouts first, and replaces the old ones only if everything succeeded.
+A typing mistake in a shader therefore leaves the program running with the previous version.
+The input layouts use \code{offsetof} on the C++ vertex structures, so the structures are the
+only description of the vertex format.
+
+\excerpt{reloadshaders}
+
+\section{The off-screen target}
+The 3D view is rendered into a texture the size of the Viewport panel, which Dear ImGui then
+shows like any other image. The target uses four samples per pixel (multisample antialiasing),
+which smooths the silhouette of the solid and the thin lines of the probe. It is written through
+an sRGB view, so the GPU encodes the linear colours of the lighting, and \emph{resolved} into a
+single-sample texture that the interface reads through a plain view. This is the same
+typeless-texture technique used for the colour maps (Section~\ref{sec:typeless}).
+
+\excerpt{scenetarget}
+
+\section{Drawing the scene}
+\code{RenderScene} clears the target, uploads the constant buffer (with \code{WRITE\_DISCARD}, so
+the CPU never waits for the GPU to finish the previous frame), and draws the surface with one
+indexed draw call. The four maps are bound to both shader stages: the vertex shader needs the
+displacement map. A missing map is replaced by a neutral grey texture.
+
+The lines of the probe and of the light marker are drawn twice from the same buffer: first at
+30\,\% opacity without the depth test, so that parts hidden behind the solid remain faintly
+visible, then normally with the depth test. Finally the textures are unbound, because Direct3D
+refuses to bind a resource for reading and writing at once, and the multisampled image is
+resolved. The resolve uses the sRGB format, so the samples are averaged in linear light.
+
+\excerpt{renderscene}
+
+\section{The frame of the application}
+\code{App::Frame} is the function of Figure~\ref{fig:frame}. The order matters in one respect:
+the probe is decided while the map panels are built, before the viewport, which needs the
+probe's result to draw the arrows.
+
+\excerpt{frame}
+
+\section{Images that answer the mouse}
+Every image of a map in the interface (the tiles of the Maps panel and the large image of the
+Inspector) is drawn by \code{App::MapImage}, which also converts the mouse position into texture
+coordinates:
+\[
+  (u,v) = \Bigl(\frac{p_x-m_x}{W},\ \frac{p_y-m_y}{H}\Bigr)\ \text{clamped to }[0,1]^2,
+\]
+where $\vect m$ is the image's top-left corner on the screen and $(W,H)$ its size. Hovering moves
+the probe, a left click pins it, a right click releases it. The probe's crosshair is drawn on
+every map image, so the eye can compare the maps at the same texel.
+
+\excerpt{mapimageui}
+
+\section{Filling the constant buffer}
+The Viewport panel computes the camera matrices (right-handed, looking at the origin) and copies
+the application's state into the constant buffer. A map is used only if it is switched on
+\emph{and} present, and the mipmap level for the displacement is chosen to match the mesh
+resolution:
+
+\excerpt{fillconstants}
+
+\section{The main loop}
+\file{main.cpp} creates the window, initializes Dear ImGui (with docking, and with its layout file
+next to the executable), and runs the classic loop: process the window messages, measure the
+elapsed time, build the interface (which renders the scene off-screen), draw the interface into
+the window, and present it synchronized with the display.
+
+\excerpt{mainloop}

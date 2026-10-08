@@ -1,0 +1,68 @@
+\chapter{Materials and textures}
+\label{ch:materials}
+
+\section{Collecting the materials}
+The ten example materials come from two libraries of physically based materials released under
+the CC0 licence (public domain): seven from \emph{ambientCG} and three from \emph{Poly Haven}
+(Appendix~\ref{app:materials}). The script \file{tools/fetch\_textures.ps1} downloads them:
+\begin{itemize}
+\item For ambientCG it asks the web API once for all seven assets
+(\url{https://ambientcg.com/api/v2/full_json?id=...&include=downloadData}), downloads the
+\code{1K-JPG} ZIP archive of each, and extracts the colour, displacement, roughness and DirectX
+normal maps.
+\item For Poly Haven it asks \url{https://api.polyhaven.com/files/<id>} for the address of each map
+at 1K resolution, and \url{https://api.polyhaven.com/info/<id>} for the name and authors.
+\item It renames every map to a standard name (\file{color.jpg}, \file{displacement.jpg},
+\file{roughness.jpg}, \file{normal.jpg}) and writes a \emph{manifest}.
+\end{itemize}
+The manifest records each material's origin, so the program can credit its source:
+\begin{lstlisting}[language={},numbers=none,basicstyle=\ttfamily\footnotesize]
+{
+  "id": "Bricks076C",  "name": "Bricks 076 C",  "site": "ambientCG",
+  "url": "https://ambientcg.com/view?id=Bricks076C",
+  "author": "Lennart Demes (ambientCG)",  "license": "CC0 1.0",
+  "files": { "color": "Bricks076C/color.jpg", "displacement": "Bricks076C/displacement.jpg",
+             "roughness": "Bricks076C/roughness.jpg", "normal": "Bricks076C/normal.jpg" },
+  "bumpFromHeight": true
+}
+\end{lstlisting}
+Neither library ships a separate \emph{bump} map for these materials, and that is no accident:
+a bump map \emph{is} a height field, and the displacement map is the height field of the material.
+The program therefore uses the displacement map as the bump map when no bump map is given, and
+labels it ``Bump (from height)'' in the interface.
+
+\section{Two copies of every map}
+Each map is kept twice. The GPU copy is a texture with a complete mipmap chain, used for
+rendering and for display in the interface. The CPU copy, an array of bytes, is what the probe
+reads. Keeping it costs 4\,MB per $1024\times1024$ map, a small price for being able to compute
+on the CPU exactly what the GPU computes.
+
+\excerpt{mapimage}
+
+\section{Sampling on the CPU}
+\label{sec:cpusampling}
+\code{MapImage::Sample} is the bilinear filter of Chapter~\ref{ch:sampling}, with wrap
+addressing and the GPU's texel-centre convention (the $-0.5$):
+
+\excerpt{sample}
+
+\section{Loading an image into a typeless texture}
+\label{sec:typeless}
+\code{LoadImage} decodes the file with \code{stb\_image}, always asking for four channels (a grey
+JPEG becomes grey RGB, which keeps the rest of the code uniform), and creates the texture. The
+important details are in the texture description:
+\begin{itemize}
+\item \code{DXGI\_FORMAT\_R8G8B8A8\_TYPELESS} allows two views with different interpretations of
+the same bytes: \code{UNORM} returns the stored values; \code{UNORM\_SRGB} decodes sRGB to linear
+(Section~\ref{sec:srgb}). Only the colour map gets an sRGB view; data maps must not be decoded.
+\item \code{MipLevels = 0} requests the full chain, and the flags \code{RENDER\_TARGET} and
+\code{GENERATE\_MIPS} let the GPU compute the smaller levels with \code{GenerateMips}.
+\end{itemize}
+
+\excerpt{loadimage}
+
+\section{Loading a material}
+A material's maps are loaded the first time it is needed; the program loads all ten at start-up
+so that the list can show thumbnails. Note how the bump map falls back to the displacement map:
+
+\excerpt{ensureloaded}

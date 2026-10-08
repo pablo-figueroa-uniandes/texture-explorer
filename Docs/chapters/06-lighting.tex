@@ -1,0 +1,161 @@
+\chapter{Lighting and specular roughness}
+\label{ch:lighting}
+
+The bumped normal and the roughness map only become visible through the lighting model. Texture
+Explorer uses the microfacet model that real-time graphics has adopted as its standard
+\cite{cook1982,walter2007,karis2013}. This chapter states it, explains each factor, and shows
+where roughness enters.
+
+\section{Reflection from a point light}
+The program lights the solid with a single point light at position $\vect p_L$ with colour and
+intensity $E$. At a surface point $\vect x$ with (bumped) normal $\vect n$, let
+\[
+  \vect L = \frac{\vect p_L-\vect x}{\lVert\vect p_L-\vect x\rVert},\qquad
+  \vect V = \frac{\vect p_{\mathrm{eye}}-\vect x}{\lVert\vect p_{\mathrm{eye}}-\vect x\rVert}
+\]
+be the directions to the light and to the eye. The reflected radiance is
+\[
+  L_o = f(\vect L,\vect V)\;E\;(\vect n\cdot\vect L)^+ \;+\; L_{\mathrm{ambient}},
+\]
+where $f$ is the \emph{bidirectional reflectance distribution function} (BRDF) and $(\cdot)^+$
+clamps negative values to zero. (A physical point light would also fall off as the inverse
+square of the distance; the program omits it so that orbiting the light does not change the
+brightness.) Every $\vect n$ in this chapter is the normal from the bump map: that is how bump
+mapping changes the image.
+
+\section{Diffuse reflection}
+Light that enters the material, scatters inside and comes out again leaves in all directions
+equally. That is Lambert's law, with BRDF
+\[
+  f_d = \frac{\rho}{\pi},
+\]
+where $\rho$ is the \emph{albedo}, read from the colour map and decoded from sRGB. The
+$1/\pi$ makes the surface reflect at most all the light it receives.
+
+\section{Specular reflection: microfacets}
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[scale=1.3,>={Stealth}]
+  \draw[thick,fill=black!8] (0,0) -- (0.5,0.25) -- (1,0) -- (1.4,0.35) -- (1.8,0.05) -- (2.3,0.3)
+     -- (2.7,0) -- (3.2,0.28) -- (3.6,0.02) -- (4,0.3) -- (4.5,0) -- (4.5,-0.3) -- (0,-0.3) -- cycle;
+  % facet normals
+  \foreach \a/\b/\c/\d in {0/0/0.5/0.25, 1/0/1.4/0.35, 2.3/0.3/2.7/0, 3.2/0.28/3.6/0.02} {
+    \draw[->,black!50] ($(\a,\b)!0.5!(\c,\d)$) -- ++($ (\b,-\a) - (\d,-\c) $);
+  }
+  % macro normal, L, V, H at a facet whose normal is along H
+  \coordinate (x) at (1.2,0.175);
+  \draw[->,very thick,ncolor] (2.25,0.6) -- ++(0,1.3) node[above] {$\vect n$};
+  \draw[->,very thick,lcolor] (2.25,0.6) -- ++(-1.1,1.0) node[above left] {$\vect L$};
+  \draw[->,very thick,npcolor] (2.25,0.6) -- ++(1.4,0.8) node[above right] {$\vect V$};
+  \draw[->,very thick,tcolor] (2.25,0.6) -- ++(0.15,1.3) node[above right] {$\vect H$};
+  \node[font=\small,align=left,right] at (4.7,0.6) {only facets whose normal\\ is $\vect H$
+    reflect $\vect L$ into $\vect V$};
+\end{tikzpicture}
+\caption{The microfacet view of a rough surface: many tiny mirrors (grey normals). The half
+vector $\vect H$ is the facet orientation that reflects light from $\vect L$ towards $\vect V$.}
+\label{fig:microfacets}
+\end{figure}
+
+A glossy surface is modelled as a multitude of microscopic mirrors, the \emph{microfacets},
+whose orientations vary around the normal $\vect n$ (Figure~\ref{fig:microfacets}). A mirror
+reflects light from $\vect L$ into $\vect V$ only if its normal is the \emph{half vector}
+\[
+  \vect H = \frac{\vect L+\vect V}{\lVert\vect L+\vect V\rVert}.
+\]
+The Cook--Torrance specular BRDF \cite{cook1982} counts those mirrors:
+\[
+  f_s(\vect L,\vect V) = \frac{D(\vect H)\;G(\vect L,\vect V)\;F(\vect V,\vect H)}
+                              {4\,(\vect n\cdot\vect L)\,(\vect n\cdot\vect V)} .
+\]
+\begin{itemize}
+\item $D$, the \emph{normal distribution function}, is the density of microfacets oriented
+along $\vect H$. It is where \textbf{roughness} enters.
+\item $G$, the \emph{geometric} or \emph{masking--shadowing} term, is the fraction of those
+microfacets that are visible both from the light and from the eye.
+\item $F$, the \emph{Fresnel} term, is the fraction of light that a mirror reflects, which grows
+towards grazing angles.
+\end{itemize}
+
+\subsection{The GGX distribution}
+Texture Explorer uses the GGX (Trowbridge--Reitz) distribution \cite{walter2007},
+\[
+  D(\vect H) = \frac{\alpha^2}{\pi\,\bigl((\vect n\cdot\vect H)^2(\alpha^2-1)+1\bigr)^2},
+  \qquad \alpha = r^2,
+\]
+where $r\in[0,1]$ is the value of the roughness map. For small $\alpha$ the distribution is a
+tall, narrow peak around $\vect n$: nearly all facets face the same way and the highlight is
+small and bright. As $\alpha$ grows the peak spreads and lowers; at $\alpha=1$, $D=1/\pi$ is
+constant and there is no highlight at all, only a sheen (Figure~\ref{fig:ggx}). GGX has longer
+``tails'' than older models such as Blinn--Phong, which gives highlights the soft halo seen on
+real materials. The remapping $\alpha=r^2$, popularized by Disney and Epic Games
+\cite{karis2013}, makes equal steps of $r$ look like equal steps of glossiness, which is better
+both for artists painting roughness maps and for a slider.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}
+\begin{semilogyaxis}[width=10cm,height=6cm,xmin=0,xmax=60,ymin=0.05,ymax=200,
+  xlabel={angle between $\vect n$ and $\vect H$ (degrees)},ylabel={$D$},
+  legend style={font=\small},legend pos=north east,grid=major,grid style={black!10}]
+  \foreach \r/\c in {0.25/tcolor,0.4/lcolor,0.6/bcolor,0.8/npcolor,1.0/black} {
+    \edef\temp{\noexpand\addplot[thick,\c,domain=0:60,samples=120]
+      {(\r^4)/(pi*((cos(x)^2)*(\r^4-1)+1)^2)};
+      \noexpand\addlegendentry{$r=\r$}}
+    \temp
+  }
+\end{semilogyaxis}
+\end{tikzpicture}
+\caption{The GGX distribution $D$ as a function of the angle between the normal and the half
+vector, for several values $r$ of the roughness map ($\alpha=r^2$). Note the logarithmic
+scale: the peak value $1/(\pi\alpha^2)$ is about $81$ at $r=0.25$ but only $2.5$ at $r=0.6$.}
+\label{fig:ggx}
+\end{figure}
+
+\subsection{Masking and shadowing}
+On a rough surface some facets hide others. The program uses Schlick's approximation of Smith's
+masking function, with the constant $k=(r+1)^2/8$ recommended for analytic lights
+\cite{karis2013}; Heitz \cite{heitz2014} explains the theory behind these functions:
+\[
+  G = G_1(\vect n\cdot\vect V)\,G_1(\vect n\cdot\vect L),\qquad
+  G_1(c) = \frac{c}{c\,(1-k)+k}.
+\]
+
+\subsection{Fresnel reflectance}
+Schlick's approximation \cite{schlick1994} interpolates between the reflectance at normal
+incidence, $F_0$, and total reflection at grazing incidence:
+\[
+  F = F_0 + (1-F_0)\,(1-\vect V\cdot\vect H)^5 .
+\]
+For dielectrics (stone, wood, plastic) $F_0\approx0.04$ and is colourless; for metals $F_0$ is
+high and coloured. The \emph{metallic workflow} interpolates between the two with a
+\emph{metallic} parameter $\mu$: $F_0 = \mathrm{lerp}(0.04, \rho, \mu)$, and metals have no
+diffuse reflection.
+
+\section{The complete model}
+Putting the pieces together, the pixel shader computes
+\[
+  L_o = \Bigl[(1-F)(1-\mu)\,\frac{\rho}{\pi} + \frac{D\,G\,F}{4\,(\vect n\cdot\vect L)(\vect n\cdot\vect V)}\Bigr]
+        \,E\,(\vect n\cdot\vect L)^+\;\eta \;+\; a\,\rho,
+\]
+where the factor $1-F$ removes from the diffuse part the light already reflected specularly,
+$a$ is a small ambient term, and $\eta$ is the horizon factor of the next section.
+
+\subsection{The horizon factor}
+\label{sec:horizon}
+The bumped normal $\vect n$ can face the light even where the \emph{geometric} normal $\Nv$ faces
+away from it; the result is light on the dark side of the solid, which looks wrong. Texture
+Explorer multiplies by
+\[
+  \eta = \operatorname{saturate}\bigl(8\,(\Nv\cdot\vect L)\bigr),
+\]
+which fades the lighting out over the last few degrees before the geometric terminator. It is
+a cheap stand-in for the self-shadowing of the relief.
+
+\begin{tryit}
+Choose a material whose roughness tile shows strong contrast (dark texels are glossy,
+light ones rough). Orbit the light (right-drag) and watch the highlight break up: it stays on
+the dark regions of the roughness map and vanishes on the light ones; the probe tells you the
+roughness value under any point. Then untick ``Roughness'' and move the ``Constant roughness'' slider to
+see the whole surface go from mirror-like to matte.
+\end{tryit}

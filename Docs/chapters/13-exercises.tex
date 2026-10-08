@@ -1,0 +1,61 @@
+\chapter{Experiments and exercises}
+\label{ch:exercises}
+
+\section{Experiments with the program}
+These experiments need no programming. Each one connects something visible in the program to a
+section of Part~I.
+
+\begin{enumerate}[label=\textbf{E\arabic*.}]
+\item \emph{Texture space} (Chapter~\ref{ch:texspace}). Select the ``UV coordinates'' view. On each
+solid, locate $u=0$, $u=1$ and the seam; on the sphere, observe the pinching at the poles; on the
+cylinder, explain why the caps show the same colours as parts of the side.
+\item \emph{Normalized coordinates.} Hover over the corners of the large image in the Inspector and
+check that $(u,v)$ goes from $(0,0)$ at the top left to $(1,1)$ at the bottom right, and that the
+texel index is $\lfloor uW\rfloor$.
+\item \emph{Bump versus displacement} (Chapter~\ref{ch:height}). With the sphere and a rough
+material, untick ``Bump'' and look at the silhouette and the lighting. Then tick ``Bump'' and
+untick ``Displacement''. Then increase ``Displacement scale'' to $0.3$ with bump off: why does the
+surface look strangely smooth despite its jagged outline?
+\item \emph{Cracks.} With displacement on, look at the edges of the pyramid and the rims of the
+cylinder from close up. Explain the cracks with equation~\eqref{eq:displace}.
+\item \emph{Bump strength} (Section~\ref{sec:bumpformula}). Pin the probe on a groove and read
+$\nts$ while varying the bump strength from $0$ to $30$. Plot the angle between $\nts$ and
+$(0,0,1)$ as a function of $k$ and compare with $\arctan\bigl(k\sqrt{h_x^2+h_y^2}\bigr)$.
+\item \emph{Tangent space versus world space} (Chapter~\ref{ch:tangent}). Pin the probe and start
+the rotation. Which numbers change and which do not? Then change the shape: which numbers change
+now?
+\item \emph{Normal maps} (Section~\ref{sec:normalmaps}). For several texels, compare the signs of
+the $x$ and $y$ components of the computed $\nts$ and of the pack normal map. Do they agree? What
+would happen with an OpenGL normal map?
+\item \emph{Roughness} (Chapter~\ref{ch:lighting}). Untick ``Roughness'' and sweep the constant
+roughness from $0.04$ to $1$ while the light orbits automatically. Relate the size of the
+highlight to Figure~\ref{fig:ggx}.
+\item \emph{Colour spaces} (Section~\ref{sec:srgb}). Compare the Inspector's ``Color (sRGB)'' value
+of a mid-grey texel with the value that the lighting actually uses after decoding. How large is
+the difference?
+\end{enumerate}
+
+\section{Programming exercises}
+In increasing order of difficulty. After editing a shader, press F5; after editing C++,
+rebuild.
+
+\begin{enumerate}[label=\textbf{P\arabic*.}]
+\item In \code{SpherePatches}, remove the minus signs of the $z$ components. Describe what
+happens to the texture and to the Inspector's $\Tv$ and $\Bv$, and relate it to
+equation~\eqref{eq:orientation} and to the sign $w$.
+\item Replace the central differences by forward differences, both in \code{BumpNormalTS} and in
+\code{BumpNormalTangent}. Compare the probe's normal before and after on a sharp edge.
+\item Add a view mode that shows the angle between the bumped normal and the geometric normal as a
+heat map.
+\item Add a view mode that shows the difference between the normal computed from the bump map and
+the material's normal map. (You will need to bind the normal map to a fifth texture slot.)
+\item Make the bump strength physically correct by dividing by the local stretch of the
+parametrization, $\lVert\vect P_u\rVert$ and $\lVert\vect P_v\rVert$
+(Section~\ref{sec:bumpformula}). On which solid is the change most visible?
+\item Recompute the normal in the vertex shader from the displacement map, so that displacement
+alone produces correct shading.
+\item Close the cracks of the pyramid by displacing the vertices of the edges along the average of
+the normals of the two faces that meet there.
+\item Replace vertex displacement by hardware tessellation (hull and domain shaders) with a
+tessellation factor that depends on the distance to the camera.
+\end{enumerate}

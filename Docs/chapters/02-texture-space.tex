@@ -1,0 +1,244 @@
+\chapter{Texture space and parametric surfaces}
+\label{ch:texspace}
+
+\section{Images, texels and normalized coordinates}
+
+A texture is an image of $W\times H$ \emph{texels}. Shaders do not address texels by
+integer indices, however, but by \emph{normalized texture coordinates} $(u,v)\in[0,1]^2$,
+so that the same coordinates work whatever the resolution of the image. Texel $(i,j)$, with
+$0\le i<W$ and $0\le j<H$, covers the little rectangle
+\[
+  \Bigl[\tfrac{i}{W},\tfrac{i+1}{W}\Bigr]\times\Bigl[\tfrac{j}{H},\tfrac{j+1}{H}\Bigr],
+\]
+and its \emph{centre} is at $\bigl((i+\frac12)/W,\ (j+\frac12)/H\bigr)$. The distinction
+between the corner and the centre of a texel matters as soon as we interpolate between texels
+(Chapter~\ref{ch:sampling}); the program's probe reports both the normalized coordinates and
+the integer texel $(\lfloor uW\rfloor,\lfloor vH\rfloor)$.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[scale=0.9]
+  % texel grid 6x6 in a 6x6 square
+  \fill[black!4] (0,0) rectangle (6,-6);
+  \draw[black!25] (0,0) grid[step=1] (6,-6);
+  \draw[thick] (0,0) rectangle (6,-6);
+  \foreach \i in {0,...,5} \foreach \j in {0,...,5}
+    \fill[black!45] (\i+0.5,-\j-0.5) circle (1.3pt);
+  % axes
+  \draw[-{Stealth},thick] (0,0) -- (7,0) node[right] {$u$};
+  \draw[-{Stealth},thick] (0,0) -- (0,-7) node[below] {$v$};
+  \node[above left] at (0,0) {$(0,0)$};
+  \node[above] at (6,0) {$1$};
+  \node[left] at (0,-6) {$1$};
+  \node[below right] at (6,-6) {$(1,1)$};
+  % highlight texel (2,1)
+  \fill[npcolor!25] (2,-1) rectangle (3,-2);
+  \draw[npcolor,thick] (2,-1) rectangle (3,-2);
+  \fill[npcolor] (2.5,-1.5) circle (2pt);
+  \draw[npcolor,<-] (2.55,-1.45) -- (4.2,-0.6) node[right,align=left,font=\small]
+     {texel $(2,1)$, centre $\bigl(\tfrac{2.5}{W},\tfrac{1.5}{H}\bigr)$};
+\end{tikzpicture}
+\caption{Normalized texture space in the Direct3D convention, for an image of
+$W=H=6$ texels. The dots are texel centres.}
+\label{fig:uvspace}
+\end{figure}
+
+\subsection{Which way is up?}
+\label{sec:uvconv}
+Two conventions coexist. Direct3D, Vulkan and Metal put $(0,0)$ at the \emph{top-left}
+corner of the image, with $v$ growing downwards, which is the order in which image files store
+their rows. OpenGL puts $(0,0)$ at the \emph{bottom-left}, with $v$ growing upwards, like a
+mathematical graph. The two are related by $v_{\mathrm{GL}} = 1 - v_{\mathrm{D3D}}$.
+Texture Explorer uses the Direct3D convention throughout (Figure~\ref{fig:uvspace}), which
+has a pleasant side effect: the mouse position on an image on the screen, where $y$ also grows
+downwards, converts to $(u,v)$ without any flip.
+
+The convention leaves a trace in every normal map: the green channel stores the
+component of the normal along $+v$, and $+v$ points down in Direct3D but up in OpenGL. That is
+why material libraries ship two variants, ``NormalDX'' and ``NormalGL'', whose green channels
+are inverted with respect to each other (Section~\ref{sec:normalmaps}).
+
+\section{Parametric surfaces}
+
+Texture mapping assigns texture coordinates to every point of a surface. For the simple
+solids of Texture Explorer the natural way to do this is to describe the surface itself as a
+\emph{parametric surface}, a function from a domain of the plane to space,
+\[
+  \vect P : [0,1]^2 \to \mathbb R^3,\qquad (u,v)\mapsto \vect P(u,v),
+\]
+and to use the parameters as texture coordinates. (In the program the parameters of a patch
+are called $(a,b)$ and are mapped affinely to $(u,v)$; for this chapter we identify them.)
+
+The two partial derivatives
+\[
+  \vect P_u = \dd{\vect P}{u},\qquad \vect P_v = \dd{\vect P}{v}
+\]
+are tangent to the surface: $\vect P_u$ points in the direction in which the texture's $u$
+increases, and $\vect P_v$ in the direction of increasing $v$. Where they are linearly
+independent, their cross product is perpendicular to the surface, and the unit normal is
+\[
+  \Nv = \pm\frac{\vect P_u\times\vect P_v}{\lVert\vect P_u\times\vect P_v\rVert}.
+\]
+The sign is chosen so that $\Nv$ points out of the solid.
+
+\subsection{Orientation and mirrored textures}
+\label{sec:orientation}
+Which sign is the outward one? Imagine looking at the surface from outside. For the texture
+to appear the right way round---not mirrored---$u$ must grow to the viewer's right and, with
+the Direct3D convention, $v$ must grow \emph{downwards}. In a right-handed system,
+right $\times$ down points \emph{into} the surface. Hence, for a correctly oriented texture,
+\begin{equation}
+  \label{eq:orientation}
+  \vect P_u \times \vect P_v \ \text{points inwards,\quad i.e.}\quad
+  \Tv\times\Bv = -\Nv
+\end{equation}
+where $\Tv$ and $\Bv$ are $\vect P_u$ and $\vect P_v$ normalized (and made perpendicular,
+Chapter~\ref{ch:tangent}). Every shape of the program was checked against
+\eqref{eq:orientation}; if it fails, the texture appears mirrored, text in it would read
+backwards, and---more subtly---the normals computed from a bump map lean the wrong way.
+
+\subsection{Distortion}
+A texture is a flat image, and most surfaces cannot be flattened without stretching. How
+much a parametrization stretches the texture is measured by the lengths of the derivatives and
+the angle between them, collected in the \emph{first fundamental form}
+\[
+  E = \vect P_u\cdot\vect P_u,\qquad F = \vect P_u\cdot\vect P_v,\qquad G = \vect P_v\cdot\vect P_v .
+\]
+A small square $\mathrm du\times\mathrm dv$ of texture becomes, on the surface, a
+parallelogram with sides $\sqrt E\,\mathrm du$ and $\sqrt G\,\mathrm dv$ and area
+$\sqrt{EG-F^2}\,\mathrm du\,\mathrm dv$. The texture keeps its proportions where
+$E=G$ and $F=0$ (the map is \emph{conformal} there), and keeps its scale where, in addition,
+$E$ is constant.
+
+\section{The four solids}
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[scale=2.4,font=\small]
+  \tikzset{uvbox/.style={draw,thick}}
+  % ---------------- sphere
+  \begin{scope}[shift={(0,0)}]
+    \fill[black!5] (0,0) rectangle (1,-1); \draw[uvbox] (0,0) rectangle (1,-1);
+    \draw[dashed] (0,-0.5) -- (1,-0.5); \node[font=\scriptsize,fill=black!5,inner sep=1pt] at (0.5,-0.5) {equator};
+    \node[font=\scriptsize] at (0.5,-0.1) {north pole};
+    \node[font=\scriptsize] at (0.5,-0.9) {south pole};
+    \node at (0.5,-1.18) {\textbf{Sphere}};
+  \end{scope}
+  % ---------------- pyramid
+  \begin{scope}[shift={(1.35,0)}]
+    \fill[black!5] (0,0) rectangle (1,-1); \draw[uvbox] (0,0) rectangle (1,-1);
+    \foreach \k/\lab in {0/{$+z$},1/{$+x$},2/{$-z$},3/{$-x$}} {
+      \draw (\k/4,0) -- (\k/4,-1);
+      \node[font=\scriptsize] at (\k/4+0.125,-0.55) {\lab};
+      \fill[ncolor] (\k/4+0.125,0) circle (0.6pt);
+    }
+    \node[font=\scriptsize,above] at (0.5,0) {apex ($v=0$)};
+    \node at (0.5,-1.18) {\textbf{Pyramid}};
+  \end{scope}
+  % ---------------- cylinder
+  \begin{scope}[shift={(2.7,0)}]
+    \fill[black!5] (0,0) rectangle (1,-1); \draw[uvbox] (0,0) rectangle (1,-1);
+    \draw[npcolor,dashed,thick] (0.5,-0.5) circle (0.5);
+    \node[font=\scriptsize] at (0.5,-0.15) {side};
+    \node[font=\scriptsize,npcolor,align=center] at (0.5,-0.55) {caps\\(planar)};
+    \node at (0.5,-1.18) {\textbf{Cylinder}};
+  \end{scope}
+  % ---------------- capsule
+  \begin{scope}[shift={(4.05,0)}]
+    \fill[black!5] (0,0) rectangle (1,-1); \draw[uvbox] (0,0) rectangle (1,-1);
+    \draw (0,-0.3055) -- (1,-0.3055); \draw (0,-0.6945) -- (1,-0.6945);
+    \node[font=\scriptsize] at (0.5,-0.153) {upper hemisphere};
+    \node[font=\scriptsize] at (0.5,-0.5) {cylinder};
+    \node[font=\scriptsize] at (0.5,-0.847) {lower hemisphere};
+    \node at (0.5,-1.18) {\textbf{Capsule}};
+  \end{scope}
+\end{tikzpicture}
+\caption{How the unit square of texture space is laid out on each solid. The pyramid gives
+each side face a vertical strip whose top edge collapses to the apex. The cylinder's caps
+reuse the coordinates of the side through a planar projection, so they are not part of the
+invertible chart. On the capsule the bands are proportional to arc length.}
+\label{fig:charts}
+\end{figure}
+
+Figure~\ref{fig:charts} summarizes how each solid of the program uses texture space.
+They were chosen because each one illustrates a different aspect of parametrization.
+
+\subsection{Sphere}
+With polar angle $\theta=\pi v$ (measured from the north pole) and azimuth $\varphi=2\pi u$,
+\[
+  \vect P(u,v) = (\sin\theta\cos\varphi,\ \cos\theta,\ -\sin\theta\sin\varphi).
+\]
+The minus sign in the third component makes the parametrization satisfy
+\eqref{eq:orientation}. The derivatives are
+\[
+  \vect P_u = 2\pi\sin\theta\,(-\sin\varphi,\,0,\,-\cos\varphi),\qquad
+  \vect P_v = \pi\,(\cos\theta\cos\varphi,\,-\sin\theta,\,-\cos\theta\sin\varphi),
+\]
+so $E = 4\pi^2\sin^2\theta$, $F=0$, $G=\pi^2$. The ratio $\sqrt E/\sqrt G = 2\sin\theta$ tells
+the story of every textured globe: at the equator a square texel becomes a rectangle twice as
+wide as it is tall, and towards the poles the texels are squeezed horizontally until, at the
+poles themselves, a whole row of the texture collapses to a point. The program drops the scalar
+factor $\sin\theta$ from $\vect P_u$ before using it as a tangent direction, so that the
+direction stays defined at the poles.
+
+\subsection{Cylinder}
+The side of a cylinder of radius $r$ and height $H$,
+$\vect P(u,v)=(r\cos\varphi,\ H/2-vH,\ -r\sin\varphi)$, has $E=(2\pi r)^2$, $F=0$, $G=H^2$:
+constant stretch, and conformal when $2\pi r = H$. A cylinder is a \emph{developable} surface:
+it can be unrolled onto the plane without distortion, which is why labels on cans look
+perfect.
+
+The caps are discs. Texture Explorer textures them with a \emph{planar projection}: the point
+$(x,\pm H/2,z)$ of a cap gets the texture coordinates of its position in the square
+circumscribed about the disc. The cap therefore shows a round piece of the texture, but the
+same $(u,v)$ now appears on the side \emph{and} on both caps: the texture mapping is no longer
+one-to-one. The probe of the program resolves this by working only with the side, the
+\emph{main chart}; the shader's magenta ring around the probed texel, drawn in texture space,
+appears on all three patches and makes the ambiguity visible.
+
+\subsection{Capsule}
+A capsule---a cylinder of radius $r$ and half-length $L$ capped by two hemispheres---is a
+surface of revolution, described by its \emph{profile} curve in the half-plane $(\rho,y)$,
+$\rho$ being the distance to the axis. The profile has three pieces: a quarter circle of length
+$q=\pi r/2$, a segment of length $2L$ and another quarter circle. Texture Explorer makes $v$
+proportional to the \emph{arc length} $s$ along the profile,
+\[
+  s = v\,(2q + 2L).
+\]
+With this choice $G$ is constant over the whole capsule---equal steps in $v$ are equal distances
+on the surface---and the texture flows smoothly from the hemispheres onto the cylinder without
+being squeezed at the junctions. With $r=L=\frac12$ the hemispheres take the bands
+$v<0.3055$ and $v>0.6945$ of the texture (Figure~\ref{fig:charts}).
+
+\subsection{Pyramid}
+The pyramid shows the problem of texturing a polyhedron. One could repeat the whole texture on
+each triangular face, but then every texel would appear four times on the solid and the
+question ``where is this texel?'' would have four answers. Texture Explorer instead gives
+each face a vertical strip of width $\frac14$ in texture space. Face $i$ goes from the apex
+$\vect A$ to the base edge $c_i c_{i+1}$:
+\[
+  \vect P(s,t) = \vect A + t\,\bigl(\mathrm{lerp}(c_i,c_{i+1},s)-\vect A\bigr),\qquad
+  u = \tfrac{i+s}{4},\quad v=t .
+\]
+The price is visible in the program. At the base, $\lVert\vect P_u\rVert = 4\cdot1.6 = 6.4$
+while $\lVert\vect P_v\rVert\approx1.79$, so a square texel becomes a rectangle about $3.6$
+times wider than tall; towards the apex the rows shrink until the strip's top edge collapses
+to a point. This is a good
+occasion to discuss why real models are \emph{unwrapped} into UV layouts by artists, and why
+those layouts are made of many separate pieces (\emph{charts} or \emph{islands}) with seams
+between them.
+
+\subsection{Seams}
+Every parametrization of a closed surface has seams. On the sphere, the cylinder and the
+capsule, the line $u=0$ and the line $u=1$ are the same curve on the solid. A mesh built on a
+grid of parameters therefore has two rows of vertices there, at the same positions but with
+different texture coordinates, $u=0$ and $u=1$. The texture must \emph{tile} (its left and
+right borders must match) for the seam to be invisible; the materials of the program are
+designed to tile.
+
+\begin{tryit}
+Choose the view ``UV coordinates'' in the Scene panel. Red encodes $u$ and green encodes $v$.
+On the sphere, follow the red gradient around the equator and find the seam; on the pyramid,
+notice that each face has its own red gradient from $0.25k$ to $0.25(k+1)$; on the cylinder,
+compare the side and the caps.
+\end{tryit}

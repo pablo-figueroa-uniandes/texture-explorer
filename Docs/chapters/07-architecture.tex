@@ -1,0 +1,95 @@
+\chapter{Architecture of the program}
+\label{ch:architecture}
+
+Texture Explorer is about 1\,800 lines of C++20 and HLSL. It uses three small libraries:
+Dear ImGui for the user interface, \code{stb\_image} to decode images, and \code{nlohmann/json}
+to read the list of materials. All three are fetched by CMake when the project is configured.
+
+\section{Modules}
+
+\begin{table}[ht]
+\centering\small
+\begin{tabularx}{\linewidth}{@{}l>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{Files} & \textbf{Responsibility}\\
+\midrule
+\file{src/Mesh.h}, \file{.cpp} & Parametric patches of the four solids; mesh generation; tangent frames; inverting the texture mapping\\
+\file{src/Material.h}, \file{.cpp} & The manifest of materials; loading images into GPU textures and CPU copies; bilinear sampling on the CPU\\
+\file{src/Inspector.h}, \file{.cpp} & The probe: map values, slope, tangent-space and world-space normals at a texel\\
+\file{shaders/pbr.hlsl} & Displacement (vertex shader); bump mapping and GGX lighting (pixel shader); debug views\\
+\file{shaders/gizmo.hlsl} & Coloured lines for the arrows of the probe and the light marker\\
+\file{src/Renderer.h}, \file{.cpp} & Direct3D~11 device, swap chain, shader compilation, off-screen multisampled target, draw calls\\
+\file{src/App.h}, \file{.cpp} & Application state and the six panels of the user interface\\
+\file{src/main.cpp} & Window, Dear ImGui set-up, main loop\\
+\file{tools/fetch\_textures.ps1} & Downloads the ten materials and writes \file{assets/materials/manifest.json}\\
+\bottomrule
+\end{tabularx}
+\caption{The source files of Texture Explorer.}
+\label{tab:modules}
+\end{table}
+
+\section{One frame}
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[node distance=7mm and 9mm,font=\small,
+  box/.style={draw,rounded corners=2pt,fill=#1,align=center,minimum height=9mm,text width=31mm},
+  box/.default=black!4, >={Stealth}]
+  \node[box=black!8] (ui) {\textbf{App::Frame}\\build the panels};
+  \node[box,right=of ui] (maps) {Maps / Inspector\\images: mouse $\to(u,v)$};
+  \node[box,right=of maps] (insp) {\textbf{Inspect}\\(CPU, one texel)};
+  \node[box,below=of insp] (lines) {arrows $\Nv,\vect n',\Tv,\Bv$\\light marker};
+  \node[box,below=of maps] (fc) {\code{FrameConstants}\\camera, light, settings};
+  \node[box=npcolor!12,below=of fc] (gpu) {\textbf{RenderScene} (GPU)\\VS: displacement\\PS: bump + GGX};
+  \node[box,left=of gpu] (img) {off-screen image\\shown in Viewport};
+  \node[box=black!8,above=of maps] (lib) {\textbf{MaterialLibrary}\\CPU copies + textures};
+  \draw[->] (ui) -- (maps);
+  \draw[->] (maps) -- node[above]{probe} (insp);
+  \draw[->] (insp) -- (lines);
+  \draw[->] (lines) |- (gpu);
+  \draw[->] (fc) -- (gpu);
+  \draw[->] (gpu) -- (img);
+  \draw[->,dashed] (lib) -| (ui);
+  \draw[->,dashed] (lib) -| (insp);
+  \draw[->,dashed] (lib.east) -- (lib.east -| insp.east) -- ++(0.6,0)
+     |- ($(gpu.south)+(0,-0.5)$) -- (gpu.south);
+\end{tikzpicture}
+\caption{The flow of one frame. The same material data feeds the probe (on the CPU) and the
+renderer (on the GPU), which apply the same formulas.}
+\label{fig:frame}
+\end{figure}
+
+Dear ImGui is an \emph{immediate-mode} library: the user interface is not a tree of widget
+objects but a function that runs every frame and calls \code{ImGui::Button},
+\code{ImGui::SliderFloat}, and so on. Each call draws a widget and tells whether the user
+interacted with it. The application's state therefore lives in ordinary member variables that
+the rest of the program reads directly. One frame proceeds as follows
+(Figure~\ref{fig:frame}):
+\begin{enumerate}
+\item The animations advance by the elapsed time.
+\item The panels are built. While the \emph{Maps} and \emph{Inspector} panels draw their images,
+they convert the mouse position into texture coordinates and update the \emph{probe}.
+\item If the probe is valid, \code{Inspect} computes everything about that texel, on the CPU.
+\item The \emph{Viewport} panel fills a constant buffer with the camera, the light and the
+settings, adds the inspector's arrows to a list of lines, and asks the renderer to draw the scene
+into an off-screen image of the size of the panel. It then shows that image.
+\item Dear ImGui draws the whole interface into the window, and the frame is presented.
+\end{enumerate}
+
+\section{A design principle: compute it twice}
+The pixel shader computes the bumped normal for millions of pixels and shows only the result.
+To make the computation visible, the probe repeats it on the CPU for one texel and shows every
+intermediate value. The two implementations must agree exactly, so they are written to be
+identical:
+\begin{itemize}
+\item the CPU keeps a byte-for-byte copy of every map and samples it bilinearly with the GPU's
+texel-centre convention (Section~\ref{sec:cpusampling});
+\item the slope is estimated with the same central differences, at level~0, with the same
+strength (\code{BumpNormalTangent} in C++, \code{BumpNormalTS} in HLSL);
+\item the tangent frame is built with the same Gram--Schmidt construction from the same patch
+functions (\code{TangentFrame} and the pixel shader);
+\item the 3D position of the probe comes from the same parametric functions that generated the
+mesh, so the arrows land on the pixels that show the probed texel.
+\end{itemize}
+The probe and the image disagree only where the program simplifies on purpose. For example, the
+probe evaluates the exact surface, while the GPU draws a mesh of flat triangles.

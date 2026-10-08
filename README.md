@@ -66,6 +66,10 @@ that one height field can either tilt normals (bump) or move geometry (displacem
 | Aerial Rocks 02 | Poly Haven (Rob Tuytel) — https://polyhaven.com/a/aerial_rocks_02 |
 | Bark Willow 02 | Poly Haven (Charlotte Baglioni) — https://polyhaven.com/a/bark_willow_02 |
 
+## Documentation
+
+[`Docs/TextureExplorer-Guide.pdf`](Docs/TextureExplorer-Guide.pdf) is a guide to the theory (texture space, sampling, bump/normal/displacement mapping, tangent space, GGX lighting) and to the code of the project, with exercises for a course. Its sources and build script are in [`Docs/`](Docs/).
+
 ## Literate version
 
 [`LiterateP/`](LiterateP/) contains the whole program written as a literate program in

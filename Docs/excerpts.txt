@@ -1,0 +1,38 @@
+# Code excerpts shown in the guide, extracted from the sources by build.ps1.
+#
+#   name | file (relative to the project root) | listings language | start regex [| end regex]
+#
+# Without an end regex the excerpt ends where the braces opened from the start line close.
+
+vertex          | src/Mesh.h          | C++  | ^struct Vertex \{
+patch           | src/Mesh.h          | C++  | ^struct Patch \{
+sphere          | src/Mesh.cpp        | C++  | ^std::vector<Patch> SpherePatches
+cylinder        | src/Mesh.cpp        | C++  | ^std::vector<Patch> CylinderPatches
+capsule         | src/Mesh.cpp        | C++  | ^std::vector<Patch> CapsulePatches
+pyramid         | src/Mesh.cpp        | C++  | ^std::vector<Patch> PyramidPatches
+tangentframe    | src/Mesh.cpp        | C++  | ^void TangentFrame
+buildmesh       | src/Mesh.cpp        | C++  | ^MeshData BuildMesh
+findsurface     | src/Mesh.cpp        | C++  | ^bool FindSurfacePoint
+
+mapimage        | src/Material.h      | C++  | ^struct MapImage \{
+sample          | src/Material.cpp    | C++  | ^XMFLOAT4 MapImage::Sample
+loadimage       | src/Material.cpp    | C++  | ^static std::shared_ptr<MapImage> LoadImage
+ensureloaded    | src/Material.cpp    | C++  | ^void MaterialLibrary::EnsureLoaded
+
+bumpnormal      | src/Inspector.cpp   | C++  | ^XMFLOAT3 BumpNormalTangent
+inspect         | src/Inspector.cpp   | C++  | ^HoverInfo Inspect
+
+cbuffer         | shaders/pbr.hlsl    | HLSL | ^cbuffer Frame
+vsmain          | shaders/pbr.hlsl    | HLSL | ^VSOut VSMain
+bumpnormalts    | shaders/pbr.hlsl    | HLSL | ^// Normal of the height field | ^\}
+psmain          | shaders/pbr.hlsl    | HLSL | ^float4 PSMain
+
+frameconstants  | src/Renderer.h      | C++  | ^struct FrameConstants
+reloadshaders   | src/Renderer.cpp    | C++  | ^bool Renderer::ReloadShaders
+scenetarget     | src/Renderer.cpp    | C++  | ^void Renderer::EnsureSceneTarget
+renderscene     | src/Renderer.cpp    | C++  | ^ID3D11ShaderResourceView\* Renderer::RenderScene
+
+frame           | src/App.cpp         | C++  | ^void App::Frame
+mapimageui      | src/App.cpp         | C++  | ^void App::MapImage
+fillconstants   | src/App.cpp         | C++  | ^    FrameConstants fc\{\}; | fc\.hoverOn =
+mainloop        | src/main.cpp        | C++  | ^    while \(running\) \{

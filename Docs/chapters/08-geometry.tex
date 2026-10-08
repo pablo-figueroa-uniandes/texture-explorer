@@ -1,0 +1,73 @@
+\chapter{Geometry: patches, meshes and tangent frames}
+\label{ch:geometry}
+
+This chapter implements Chapter~\ref{ch:texspace}. The key abstraction is the \emph{patch}: a
+function from the parameter square to a surface point with everything the rest of the program
+needs to know about it.
+
+\section{Surface points, vertices and patches}
+
+A patch returns a \code{SurfacePoint}: position, unit normal, the derivatives
+$\vect P_u$ and $\vect P_v$ (not normalized), and the texture coordinates. The GPU receives a
+more compact \code{Vertex}, which stores the tangent made perpendicular to the normal, and the
+handedness sign $\sigma$ of Chapter~\ref{ch:tangent} in its fourth component:
+
+\excerpt{vertex}
+
+A \code{Patch} wraps the function. When the patch's texture coordinates are an affine function of
+its parameters, $u = u_0 + a(u_1-u_0)$, $v=v_0+b(v_1-v_0)$, the patch is \emph{invertible}: from
+$(u,v)$ we can recover $(a,b)$ and so the point. The caps of the cylinder and the base of the
+pyramid, textured by projection, are not invertible.
+
+\excerpt{patch}
+
+\section{The four solids}
+
+The sphere is a direct transcription of the formulas of Chapter~\ref{ch:texspace}. Note that the
+tangent passed to \code{Make} is $\vect P_u/(2\pi\sin\theta)$, which remains defined at the
+poles:
+
+\excerpt{sphere}
+
+The cylinder has three patches. The caps compute their texture coordinates from their positions
+(the planar projection); the sign \code{ny} handles the top cap (seen from above) and the bottom
+cap (seen from below) with one function, keeping $\Tv\times\Bv=-\Nv$ on both:
+
+\excerpt{cylinder}
+
+The capsule is a surface of revolution with $v$ proportional to arc length along the profile.
+For each of the three pieces of the profile the code computes the profile point
+$(\rho,y)$ (\code{radial}, \code{y}), the profile normal (\code{nr}, \code{ny}), and the
+profile's unit tangent $(\mathrm d\rho/\mathrm ds,\ \mathrm dy/\mathrm ds)$ (\code{dr},
+\code{dy}). The revolution by the azimuth then yields the point, the normal and $\vect P_v$:
+
+\excerpt{capsule}
+
+Each side face of the pyramid is the family of segments from the apex to the points of the base
+edge. The face normal is computed once, as $\vect B\times\vect T$ (our orientation rule read
+backwards), from the edge and the median of the face:
+
+\excerpt{pyramid}
+
+\section{The tangent frame}
+\code{TangentFrame} implements the Gram--Schmidt construction of Chapter~\ref{ch:tangent}. If
+$\vect P_u$ is degenerate (zero, or parallel to $\Nv$) it derives a tangent from $\vect P_v$
+instead. The bitangent is $\pm\Nv\times\Tv$, with the sign that makes it point towards $+v$:
+
+\excerpt{tangentframe}
+
+\section{Building the mesh}
+\code{BuildMesh} samples every patch on a regular grid of $(\textit{segments}+1)^2$ vertices and
+emits two triangles per cell. Patches do not share vertices: along seams and creases this gives
+each side its own texture coordinates and normals, which is exactly what is needed (and is also
+why displacement opens cracks there, Section~\ref{sec:displacement}). The handedness $w$ is
+computed for each vertex and stored with the tangent.
+
+\excerpt{buildmesh}
+
+\section{Inverting the texture mapping}
+Finally, the function that the probe uses to find the texel on the solid: look for an invertible
+patch whose rectangle in texture space contains $(u,v)$, solve the affine equations for the
+parameters, and evaluate the patch.
+
+\excerpt{findsurface}
