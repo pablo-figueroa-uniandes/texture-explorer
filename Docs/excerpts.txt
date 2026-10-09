@@ -36,3 +36,18 @@ frame           | src/App.cpp         | C++  | ^void App::Frame
 mapimageui      | src/App.cpp         | C++  | ^void App::MapImage
 fillconstants   | src/App.cpp         | C++  | ^    FrameConstants fc\{\}; | fc\.hoverOn =
 mainloop        | src/main.cpp        | C++  | ^    while \(running\) \{
+
+# The macOS port (mac/) and the comparison program (mac/compare/)
+mlookat         | mac/src/VecMath.h   | C++  | ^// XMMatrixLookAtRH
+mperspective    | mac/src/VecMath.h   | C++  | ^// XMMatrixPerspectiveFovRH
+mloadimage      | mac/src/Material.cpp | C++ | ^static std::shared_ptr<MapImage> LoadImage
+mframe          | mac/shaders/pbr.metal | Metal | ^struct Frame
+mvsmain         | mac/shaders/pbr.metal | Metal | ^vertex VSOut VSMain
+mbumpnormalts   | mac/shaders/pbr.metal | Metal | ^float3 BumpNormalTS
+mframeconstants | mac/src/Renderer.h  | C++  | ^struct FrameConstants | ^static_assert
+mpipeline       | mac/src/Renderer.cpp | C++ | ^    // A pipeline state object bundles | newRenderPipelineState\(pd, &error\)\);
+mscenetarget    | mac/src/Renderer.cpp | C++ | ^void Renderer::EnsureSceneTarget
+mrenderscene    | mac/src/Renderer.cpp | C++ | ^MTL::Texture\* Renderer::RenderScene
+mframeloop      | mac/src/main.mm     | {[Objective]C} | ^- \(void\)drawInMTKView
+mviewportsize   | mac/src/App.cpp     | C++  | ^    // The offscreen image has one texel | ^    const uint32_t w
+shimdevice      | mac/compare/shims/d3d11.h | C++ | ^struct ID3D11Device \{ | ^\};

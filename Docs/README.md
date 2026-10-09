@@ -1,6 +1,6 @@
 # Texture Explorer: theory and code
 
-**[TextureExplorer-Guide.pdf](TextureExplorer-Guide.pdf)** is a 55-page guide to the
+**[TextureExplorer-Guide.pdf](TextureExplorer-Guide.pdf)** is a 70-page guide to the
 project, written for a computer graphics course.
 
 - **Part I, Theory:**
@@ -12,6 +12,10 @@ project, written for a computer graphics course.
 - **Part II, Implementation:** the architecture of the program and a walk-through of its
   code. Every listing is extracted from the real source files when the guide is built.
 - **Exercises:** experiments to do in the program, and programming exercises.
+- **Part III, The macOS port:** how the port replaces DirectXMath, Direct3D 11, HLSL and
+  Win32 with `simd`, Metal, the Metal Shading Language and AppKit; and how to compare the two
+  implementations (reading, running, and the comparison program in `mac/compare`), with
+  exercises.
 
 ## Files
 
@@ -32,6 +36,12 @@ packages it needs.
 ```powershell
 powershell -ExecutionPolicy Bypass -File Docs\build.ps1
 powershell -ExecutionPolicy Bypass -File Docs\build.ps1 -TeX C:\path\to\tectonic.exe
+```
+
+On macOS, with PowerShell 7 and tectonic (`brew install --cask powershell`, `brew install tectonic`):
+
+```sh
+pwsh Docs/build.ps1
 ```
 
 An excerpt runs from its matching first line until the braces opened there close again. An

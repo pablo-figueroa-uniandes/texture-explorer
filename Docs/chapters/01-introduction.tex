@@ -47,13 +47,18 @@ through which roughness acts.
 Part~II walks through the implementation. Every listing in it is extracted automatically
 from the source files when this document is built, so the code shown is always the code that
 runs; each listing is labelled with its file and line numbers. Chapter~\ref{ch:exercises}
-proposes experiments and exercises for a course. For a broader treatment of every topic, see
+proposes experiments and exercises for a course.
+
+Part~III presents the port of the program to macOS and Metal (Chapter~\ref{ch:macport}) and
+explains how the two implementations can be compared, by reading them side by side, by running
+them, and by a program that compares their numerical results (Chapter~\ref{ch:comparing}).
+For a broader treatment of every topic, see
 the books by Akenine-M\"oller et al.\ \cite{akenine2018} and by Pharr et al.\ \cite{pharr2016}.
 
 \section*{Running the program}
 
 The program needs Windows 10 or later and a GPU with Direct3D~11. From the root of the
-repository:
+repository (for macOS, see Chapter~\ref{ch:macport}):
 
 \begin{lstlisting}[language={},numbers=none,frame=none,basicstyle=\ttfamily\small]
 powershell -ExecutionPolicy Bypass -File tools\fetch_textures.ps1   # once
@@ -71,6 +76,6 @@ starts or stops the rotation of the solid. On a map, hovering moves the probe, a
 pins it, and a right click releases it.
 
 \paragraph{Conventions.} Vectors are bold: $\vect p$, $\Nv$. Unit vectors are not marked
-specially. The world is right-handed with $y$ up. Texture space follows Direct3D:
+specially. The world is right-handed with $y$ up. Texture space follows Direct3D (and Metal):
 $(0,0)$ is the top-left corner of an image and $v$ grows downwards
 (Section~\ref{sec:uvconv}).

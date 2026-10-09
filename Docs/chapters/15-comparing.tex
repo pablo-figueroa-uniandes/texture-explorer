@@ -1,0 +1,154 @@
+\chapter{Comparing the two implementations}
+\label{ch:comparing}
+
+Two implementations of one program are an opportunity: whatever differs between them depends
+on the platform, and whatever is common does not. This chapter describes three ways to compare
+Direct3D and Metal versions of Texture Explorer, from the most informal to the most precise:
+reading the code, running both programs, and measuring their results.
+
+\section{Reading the code side by side}
+Every source file has a counterpart with the same name, the same functions and the same order
+(Table~\ref{tab:pairs}), so the two can be opened next to each other in any editor, or compared
+with a difference tool from the root of the repository:
+\begin{lstlisting}[language={},numbers=none,frame=none,basicstyle=\ttfamily\small]
+git diff --no-index src/Inspector.cpp mac/src/Inspector.cpp
+git diff --no-index --word-diff shaders/pbr.hlsl mac/shaders/pbr.metal
+\end{lstlisting}
+The amount of difference is itself instructive. The geometry and the inspector differ only in
+vector types; the shaders only in the syntax of Table~\ref{tab:hlslmsl}; the user interface in a
+handful of lines; the renderer and the main program almost everywhere.
+
+\begin{table}[ht]
+\centering\small
+\begin{tabularx}{\linewidth}{@{}ll>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{Windows} & \textbf{macOS} & \textbf{What differs}\\
+\midrule
+--- & \file{mac/src/VecMath.h} & the parts of DirectXMath the program needs (Section~\ref{sec:simd})\\
+\file{src/Mesh.*} & \file{mac/src/Mesh.*} & vector types only\\
+\file{src/Material.*} & \file{mac/src/Material.*} & Metal textures and views; command buffer for mipmaps\\
+\file{src/Inspector.*} & \file{mac/src/Inspector.*} & vector types only\\
+\file{shaders/pbr.hlsl} & \file{mac/shaders/pbr.metal} & HLSL syntax $\to$ MSL syntax (Table~\ref{tab:hlslmsl})\\
+\file{shaders/gizmo.hlsl} & \file{mac/shaders/gizmo.metal} & idem\\
+\file{src/Renderer.*} & \file{mac/src/Renderer.*} & Direct3D~11 $\to$ Metal (Table~\ref{tab:d3dmetal})\\
+\file{src/App.*} & \file{mac/src/App.*} & texture handles, paths, opening a URL, Retina scale, Command-R\\
+\file{src/main.cpp} & \file{mac/src/main.mm} & Win32 loop $\to$ AppKit delegate and \code{MTKView}\\
+\file{CMakeLists.txt} & \file{mac/CMakeLists.txt} & back ends of ImGui, metal-cpp, frameworks, bundle\\
+\bottomrule
+\end{tabularx}
+\caption{The files of the two implementations.}
+\label{tab:pairs}
+\end{table}
+
+The literate version of the program in \file{LiterateP} makes this comparison precise. It
+contains both implementations, and every piece of code that is identical in both is written
+once and \emph{used} by both: the woven document says so under the piece, and its index lists
+all of them. Since the tool that checks the literate program regenerates both implementations
+from it and compares them with the repository byte for byte, the list of shared pieces cannot
+become outdated.
+
+\section{Running both programs}
+Both programs start with the same material, shape, camera, light and settings, and lay out their
+panels the same way; Figures~\ref{fig:pyramid} and~\ref{fig:macpyramid} were taken that way. To
+compare them:
+\begin{enumerate}
+\item Start both programs and choose the same material, shape and view mode.
+\item Pin the probe on the same texel. Clicking in the large image of the Inspector is easiest;
+the $(u,v)$ shown tells how close the two probes are.
+\item Compare the readouts. The values of the maps and the tangent-space normal depend only on
+$(u,v)$ and must agree to the digits shown; the world-space vectors depend also on the shape and
+on the rotation, which can be set to the same angle with its slider.
+\item Compare the images, in the lit view and in the debug views. The ``UV coordinates'',
+``World normal'' and ``Tangent-space normal'' views turn the data of the shaders into colours,
+so a screenshot of each can be compared pixel by pixel with an image tool.
+\end{enumerate}
+The images will be almost but not exactly identical, and the reasons are worth discussing:
+\begin{itemize}
+\item Neither Direct3D nor Metal requires bit-identical results from different GPUs. Texture
+filtering, in particular anisotropic filtering, multisample coverage and the precision of
+functions such as \code{pow} and \code{normalize} are specified only up to a tolerance.
+\item The lines of the arrows are one \emph{pixel} wide, so they look half as thick on a Retina
+display.
+\item The fonts differ (Segoe~UI and San Francisco), and with them the sizes of the panels in
+pixels.
+\end{itemize}
+
+\section{Measuring: the comparison program}
+\label{sec:probe}
+The CPU half of the program---the shapes, the sampling of the maps and the inspector---can be
+compared exactly, and \file{mac/compare} contains a program that does it on a Mac. The obstacle
+is that the two implementations never run on the same computer. However, the CPU half of the
+Windows version needs only standard C++, DirectXMath and a few declarations from Direct3D.
+DirectXMath is a header-only library that Microsoft publishes for other platforms too, and the
+Direct3D declarations can be replaced by stand-ins that compile and do nothing. So the very files
+\file{src/Mesh.cpp}, \file{src/Material.cpp} and \file{src/Inspector.cpp}, unmodified, can be
+compiled on a Mac next to their macOS counterparts:
+\begin{lstlisting}[language={},numbers=none,frame=none,basicstyle=\ttfamily\small]
+cmake -S mac/compare -B mac/compare/build
+cmake --build mac/compare/build --target compare
+\end{lstlisting}
+
+\paragraph{How it works.} The source file \file{probe.cpp} is compiled twice: once with the
+Windows files (and the stand-ins of \file{mac/compare/shims} first in the include path), and once
+with the files of the port. Both programs print the same report: the size of each mesh, every
+997th vertex, and the full answer of the inspector---colour, bump, displacement, roughness,
+slope, $\nts$, and the world-space position, $\Nv$, $\vect n'$, $\Tv$ and $\Bv$---for all ten
+materials on all four shapes, at the corners of an $8\times8$ grid of texels (where wrapping
+matters) and on a second grid between texel centres (where interpolation matters). The script
+\file{compare.py} matches the two reports line by line and prints, for each quantity, the largest
+difference. The stand-in for Direct3D is itself instructive: it lists exactly how much of
+Direct3D the loading of a material touches.
+
+\excerpt{shimdevice}
+
+\paragraph{Results.} At the time of writing, the 7\,149 lines of the two reports compare as
+follows:
+
+\begin{center}\small
+\begin{tabular}{@{}lr@{}}
+\toprule
+\textbf{Quantity} & \textbf{Largest difference}\\
+\midrule
+mesh sizes and index sums & identical\\
+vertex positions, normals and tangents & $2\cdot10^{-7}$\\
+vertex texture coordinates & $0$\\
+colour, bump, displacement and roughness at the probe & $0$\\
+slope of the height field & $0$\\
+tangent-space normal $\nts$ & $2\cdot10^{-7}$\\
+world-space $\Nv$, $\vect n'$, $\Tv$, $\Bv$ & $2\cdot10^{-7}$\\
+world-space position of the probe & $1\cdot10^{-6}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The values read from the maps agree exactly, because both versions sample them with the same
+statements (Section~\ref{sec:cpusampling}). The vectors differ in the last one or two bits of a
+\code{float}, $2^{-23}\approx1.2\cdot10^{-7}$: DirectXMath and \code{simd} perform the same
+operations, but not always in the same way---a normalization may divide by a square root in one
+library and multiply by a reciprocal square root in the other. The script accepts differences up
+to $10^{-5}$, a hundred times the rounding differences and far below anything visible in the
+inspector, and fails otherwise. A real discrepancy is much larger: replacing the factor
+$\frac12$ of the central differences by $0.6$ in one version makes the script fail with a
+difference of $0.03$ in the slope, and it names the material, shape and texel where the largest
+difference occurs.
+
+\section{Exercises}
+\begin{enumerate}[label=\textbf{C\arabic*.}]
+\item Change the bump normal in one version only, for example to forward differences
+(Section~\ref{sec:centraldiff}), and run the comparison. Which quantities does it flag? Why does
+the slope change but not the values of the maps?
+\item Compare \file{shaders/pbr.hlsl} and \file{mac/shaders/pbr.metal} with a word difference.
+Classify every difference into the rows of Table~\ref{tab:hlslmsl}. Is there any difference in the
+mathematics?
+\item In \file{mac/shaders/pbr.metal}, replace one \code{packed\_float3} of \code{Frame} by
+\code{float3}. Predict what happens on the screen, and explain why the \code{static\_assert} of
+the C++ structure does not detect the mistake.
+\item In the macOS viewport, write \code{view * proj} instead of \code{proj * view}. Describe the
+image, and explain why the Windows version writes the product in the other order.
+\item On a Retina display, render the scene at the size of the panel in points instead of pixels.
+How does the image change, and why?
+\item Capture the ``World normal'' view in both programs at the same window size and compute the
+difference image. Where are the differences largest, and why there?
+\item The comparison program covers only the CPU half. Design a comparison of the GPU half:
+what would each program have to write to a file, and what tolerance would be reasonable?
+\end{enumerate}

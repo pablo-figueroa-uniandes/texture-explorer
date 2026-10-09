@@ -47,6 +47,11 @@ following the braces of the function or structure that starts at the matching li
 powershell -ExecutionPolicy Bypass -File Docs\build.ps1
 powershell -ExecutionPolicy Bypass -File Docs\build.ps1 -TeX C:\tools\tectonic.exe
 \end{lstlisting}
+On macOS or Linux the same script runs with PowerShell~7 (\code{brew install --cask powershell},
+and \code{brew install tectonic} for a TeX engine):
+\begin{lstlisting}[language={},numbers=none,basicstyle=\ttfamily\small]
+pwsh Docs/build.ps1
+\end{lstlisting}
 Because the listings are extracted at build time, the guide always shows the code as it is. If a
 function is renamed, the build stops with an error that names the excerpt to fix.
 

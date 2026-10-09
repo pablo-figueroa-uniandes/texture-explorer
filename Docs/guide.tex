@@ -1,5 +1,5 @@
 % Texture Explorer -- a guide to the theory and the code.
-% Build with:  powershell -ExecutionPolicy Bypass -File build.ps1
+% Build with:  powershell -ExecutionPolicy Bypass -File build.ps1   (on macOS: pwsh build.ps1)
 % (build.ps1 first extracts the code excerpts from the sources into build/excerpts.)
 \documentclass[11pt,a4paper,openany]{report}
 
@@ -48,6 +48,11 @@
     Texture2D,SamplerState,static,const,in,out,inout,uniform,lerp,saturate,mul,normalize,
     dot,cross,pow,clamp,frac,length,abs,max,min},
   sensitive=true}
+\lstdefinelanguage{Metal}[ISO]{C++}{%
+  morekeywords={vertex,fragment,kernel,constant,device,thread,float2,float3,float4,float4x4,
+    packed_float3,texture2d,sampler,half,uint,mix,saturate,normalize,dot,cross,pow,clamp,fract,
+    length,abs,max,min},
+  sensitive=true}
 \lstdefinestyle{excerpt}{%
   basicstyle=\ttfamily\footnotesize,
   keywordstyle=\bfseries\color{kwcolor},
@@ -80,7 +85,8 @@
 
 \title{\Huge\textbf{Texture Explorer}\\[10pt]
   \LARGE Texture, bump, displacement and roughness maps\\[4pt]
-  \large Theory and implementation of an interactive teaching tool}
+  \large Theory and implementation of an interactive teaching tool\\[4pt]
+  \normalsize for Windows (Direct3D~11) and macOS (Metal)}
 \author{}
 \date{\today}
 
@@ -107,6 +113,9 @@
 \input{chapters/11-shaders}
 \input{chapters/12-renderer-ui}
 \input{chapters/13-exercises}
+\part{The macOS port}
+\input{chapters/14-macos-port}
+\input{chapters/15-comparing}
 \appendix
 \input{chapters/A-appendix}
 \input{chapters/references}
