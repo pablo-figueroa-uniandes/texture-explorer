@@ -47,6 +47,10 @@ specular highlight is, through a microfacet model of reflection.
 \end{tabular}
 \medskip
 
+The program also exists for macOS, written for Apple's Metal instead of Direct3D. That
+version is presented after the first one, beginning in \S\ref{macport},
+which also explains how the two versions can be compared.
+
 We shall meet them roughly from the bottom up: first the geometry, because texture
 coordinates are a property of geometry; then the images; then the mathematics of the
 probe; then the GPU code that does the same mathematics for every pixel; and finally

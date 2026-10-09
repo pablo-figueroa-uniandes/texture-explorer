@@ -1,0 +1,198 @@
+@* macOS: parametric shapes.
+The shapes are pure geometry and have nothing to do with the platform. The port keeps the
+whole design of the first part: patches, the inversion used by the inspector and the
+tangent frame. Only the vector types change, from |XMFLOAT3| to |simd::float3|. Where a
+module did not mention a vector type at all it is reused as it is; the header is a good
+example.
+
+<<file:mac/src/Mesh.h>>=
+#pragma once
+// Parametric shapes. Every shape is a set of patches; each patch maps a parameter
+// square (a,b) in [0,1]^2 to a surface point with position, normal, tangent frame
+// and texture coordinates. The same functions build the GPU meshes and answer the
+// inspector's question "where on the object is texel (u,v)?".
+#include "VecMath.h"
+#include <functional>
+#include <vector>
+#include <cstdint>
+
+<<The four shapes>>
+
+<<Surface points (macOS)>>
+
+<<Vertex layout (macOS)>>
+
+<<Patches>>
+
+<<Mesh data>>
+
+<<Interface of the mesh module (macOS)>>
+
+@ A surface point lives only on the CPU, so it can use the computing type |simd::float3|
+directly, with no loads and stores.
+
+<<Surface points (macOS)>>=
+struct SurfacePoint {
+    simd::float3 pos;     // object space
+    simd::float3 normal;  // unit outward geometric normal
+    simd::float3 dPdu;    // direction of increasing u (tangent T, not normalized)
+    simd::float3 dPdv;    // direction of increasing v (bitangent B, not normalized)
+    simd::float2 uv;
+};
+
+@ A vertex, on the contrary, is copied byte for byte into a GPU buffer and must keep the
+packed layout of the Direct3D version: $3+3+4+2$ floats, 48 bytes. With |simd::float3|
+members it would grow to 64 bytes, with gaps, which is why the storage types of
+<<Storage types for GPU data>> exist. The |static_assert| protects the layout that
+<<Describe the vertex layouts to Metal>> relies on.
+
+<<Vertex layout (macOS)>>=
+// Packed like the Direct3D vertex (48 bytes); described to Metal by a vertex descriptor.
+struct Vertex {
+    Float3 pos;
+    Float3 normal;
+    Float4 tangent;  // xyz = T orthogonalized against N, w = sign so B = w * cross(N, T)
+    simd::float2 uv;
+};
+static_assert(sizeof(Vertex) == 48);
+
+@
+<<Interface of the mesh module (macOS)>>=
+std::vector<Patch> MakePatches(Shape shape);
+MeshData BuildMesh(Shape shape, int segments);
+// Finds the surface point whose texture coordinate is (u,v). Returns false if no
+// invertible patch covers that uv.
+bool FindSurfacePoint(Shape shape, float u, float v, SurfacePoint& out);
+// Builds the orthonormal tangent frame used by both shader and inspector.
+void TangentFrame(const SurfacePoint& p, simd::float3& T, simd::float3& B, simd::float3& N);
+
+@ In the implementation, the cylinder and the capsule are shared with the first part:
+they compute only with |float|s and pass vectors to |Make| as braced lists like
+|{0, -1, 0}|. The sphere and the pyramid name a vector type and are rewritten.
+
+<<file:mac/src/Mesh.cpp>>=
+#include "Mesh.h"
+#include <cmath>
+
+using simd::float3;
+
+namespace {
+constexpr float kPi = 3.14159265358979f;
+
+// Texture-space convention (Direct3D and Metal): u grows to the right, v grows DOWN the image.
+// For a viewer outside the surface this means cross(dPdu, dPdv) == -N.
+
+<<Helper that builds a surface point (macOS)>>
+
+<<Patches of the sphere (macOS)>>
+
+<<Patches of the cylinder>>
+
+<<Patches of the capsule>>
+
+<<Patches of the pyramid (macOS)>>
+} // namespace
+
+<<The name of a shape>>
+
+<<The patches of a shape>>
+
+<<The tangent frame (macOS)>>
+
+<<Building a mesh (macOS)>>
+
+<<Finding the surface point of a texel>>
+
+@ The helper takes |Float3| parameters, not |simd::float3|. The reason is a detail of C++:
+a braced list such as |{-sp, 0, -cp}| can initialize a class with a three-argument
+constructor, but not a compiler vector type. Since |Float3| also converts from and to
+|simd::float3|, callers may pass either.
+
+<<Helper that builds a surface point (macOS)>>=
+// Float3 parameters accept both simd vectors and braced lists such as {0, 1, 0}.
+SurfacePoint Make(Float3 p, Float3 n, Float3 du, Float3 dv, float u, float v) {
+    return SurfacePoint{p, n, du, dv, simd::float2{u, v}};
+}
+
+@ The sphere is the sphere of the first part with |float3| in place of |XMFLOAT3|.
+
+<<Patches of the sphere (macOS)>>=
+std::vector<Patch> SpherePatches() {
+    Patch side;
+    side.invertible = true;
+    side.eval = [](float a, float b) {
+        const float th = kPi * b, ph = 2 * kPi * a;
+        const float st = std::sin(th), ct = std::cos(th), sp = std::sin(ph), cp = std::cos(ph);
+        float3 p{st * cp, ct, -st * sp};
+        return Make(p, p, {-sp, 0, -cp}, {ct * cp, -st, -ct * sp}, a, b);
+    };
+    return {side};
+}
+
+@ The sides of the pyramid show the difference between the two libraries best. Compare
+this with <<Add the four sides of the pyramid>>: with \texttt{simd} there is nothing to load
+or store, and the operators work on the vectors directly. |XMVectorLerp|$(\vect a,\vect b,s)$
+is $\vect a+s(\vect b-\vect a)$, written out here because |simd::mix| would need |s| as a
+vector. The base of the pyramid is shared.
+
+<<Patches of the pyramid (macOS)>>=
+std::vector<Patch> PyramidPatches() {
+    constexpr float a = 0.8f, h = 0.8f;
+    static const float3 apex{0, h, 0};
+    static const float3 c[4] = {{-a, -h, a}, {a, -h, a}, {a, -h, -a}, {-a, -h, -a}};
+    std::vector<Patch> patches;
+    // Each side face owns a quarter of the texture in u; v runs from apex (0) to base (1).
+    for (int i = 0; i < 4; ++i) {
+        Patch f;
+        f.invertible = true;
+        f.u0 = i / 4.0f; f.u1 = (i + 1) / 4.0f;
+        f.eval = [i](float s, float t) {
+            const float3 A = apex, C0 = c[i], C1 = c[(i + 1) % 4];
+            const float3 edge = C0 + s * (C1 - C0);  // XMVectorLerp
+            const float3 P = A + t * (edge - A);
+            const float3 du = C1 - C0, dv = edge - A;
+            const float3 N = simd::normalize(simd::cross(0.5f * (C0 + C1) - A, du));
+            return Make(P, N, du, dv, (i + s) / 4.0f, t);
+        };
+        patches.push_back(f);
+    }
+    <<Add the base of the pyramid>>
+    return patches;
+}
+
+@ The Gram--Schmidt construction of the tangent frame, line for line as in the first part.
+
+<<The tangent frame (macOS)>>=
+void TangentFrame(const SurfacePoint& p, float3& T, float3& B, float3& N) {
+    const float3 n = simd::normalize(p.normal);
+    float3 t = p.dPdu - n * simd::dot(n, p.dPdu);
+    if (simd::length_squared(t) < 1e-12f)  // degenerate: derive from dv instead
+        t = simd::cross(p.dPdv, n);
+    t = simd::normalize(t);
+    float3 b = simd::cross(n, t);
+    if (simd::dot(b, p.dPdv) < 0) b = -b;
+    T = t; B = b; N = n;
+}
+
+@ Building a mesh differs only in the computation of the handedness $w$; the triangles are
+emitted by the module of the first part.
+
+<<Building a mesh (macOS)>>=
+MeshData BuildMesh(Shape shape, int segments) {
+    MeshData mesh;
+    for (const Patch& patch : MakePatches(shape)) {
+        const uint32_t base = static_cast<uint32_t>(mesh.vertices.size());
+        for (int j = 0; j <= segments; ++j) {
+            for (int i = 0; i <= segments; ++i) {
+                const SurfacePoint sp = patch.eval(float(i) / segments, float(j) / segments);
+                float3 T, B, N;
+                TangentFrame(sp, T, B, N);
+                // Handedness: B = w * cross(N, T)
+                const float w = simd::dot(simd::cross(N, T), B) < 0 ? -1.0f : 1.0f;
+                mesh.vertices.push_back({sp.pos, N, {T.x, T.y, T.z, w}, sp.uv});
+            }
+        }
+        <<Emit the triangles of one patch>>
+    }
+    return mesh;
+}

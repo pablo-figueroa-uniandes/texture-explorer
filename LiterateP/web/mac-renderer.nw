@@ -1,0 +1,562 @@
+@* macOS: the renderer.
+The renderer is where the two graphics interfaces meet the program, and so it is where
+the port differs most from the original. It still does the same three things: it owns the
+GPU objects, it draws the scene into an off-screen multisampled image, and it hands the
+result to the user interface. Before reading the code it helps to have a dictionary.
+
+\medskip
+\begin{tabular}{ll}
+\textbf{Direct3D 11} & \textbf{Metal} \\
+device (|ID3D11Device|) & device (|MTL::Device|) \\
+immediate context & command queue, command buffers and \emph{encoders} \\
+swap chain & the drawables of a |CAMetalLayer| (owned here by |MTKView|) \\
+texture + shader resource view & texture, possibly a view of another texture \\
+render target and depth-stencil views & attachments of a \emph{render pass descriptor} \\
+|ClearRenderTargetView| & load action |Clear| \\
+|ResolveSubresource| & store action |MultisampleResolve| \\
+shaders + input layout + blend state & one \emph{render pipeline state} \\
+rasterizer state & a few calls on the encoder (|setCullMode|, \dots) \\
+depth-stencil state, sampler state & the same, created from descriptors \\
+dynamic constant buffer (|Map|/|Unmap|) & |setVertexBytes| / |setFragmentBytes| \\
+|ComPtr| & |NS::SharedPtr| \\
+\end{tabular}
+\medskip
+
+The deepest difference is in the second row. A Direct3D~11 context executes each call as
+it is made, as far as the program can tell. Metal makes the recording of work explicit:
+the program asks the queue for a \emph{command buffer}, records passes into it through
+encoders, and \emph{commits} it; the GPU executes committed buffers in order. In this
+program every frame has exactly one command buffer, which receives first the scene and
+then the user interface.
+
+<<file:mac/src/Renderer.h>>=
+#pragma once
+#include "Material.h"
+#include "Mesh.h"
+#include <Metal/Metal.hpp>
+#include <cstddef>
+#include <filesystem>
+#include <string>
+#include <vector>
+
+<<Constants of a frame, as seen from C++ (macOS)>>
+
+<<Vertices of lines (macOS)>>
+
+class Renderer {
+public:
+    <<Public interface of the renderer (macOS)>>
+
+private:
+    <<Private helpers of the renderer (macOS)>>
+
+    <<Device, queue and the command buffer of the frame>>
+
+    <<The off-screen scene target (macOS)>>
+
+    <<Pipeline objects (macOS)>>
+};
+
+@ The C++ side of the frame constants of \S\ref{metalframe}. The storage type |Float3|
+packs like |packed_float3|; the matrices are |simd::float4x4|, which is what the shader's
+|float4x4| expects. Two static assertions check the size and one offset, which catches
+most mistakes in such a structure at compile time.
+
+<<Constants of a frame, as seen from C++ (macOS)>>=
+// Mirrors struct Frame in mac/shaders/pbr.metal (16-byte aligned rows).
+struct FrameConstants {
+    simd::float4x4 world;
+    simd::float4x4 viewProj;
+    Float3 cameraPos;  float bumpStrength;
+    Float3 lightPos;   float lightIntensity;
+    Float3 lightColor; float dispScale;
+    float dispMid, dispLod, metallic, ambient;
+    int viewMode, useColor, useBump, useDisp;
+    int useRough; float constRoughness; simd::float2 hoverUV;
+    float hoverOn; Float3 pad;
+};
+static_assert(sizeof(FrameConstants) == 240 && offsetof(FrameConstants, hoverUV) == 216);
+
+@
+<<Vertices of lines (macOS)>>=
+struct LineVertex {
+    Float3 pos;
+    Float4 color;
+};
+
+@ The public interface is that of the Windows renderer with two changes. There is no
+|Resize| and no |Present|: the view that shows the window (\S\ref{macmain}) takes care of
+its own drawables. And there is |BeginFrame|, which starts the command buffer of the
+frame. The scene comes back as a texture, which ImGui can draw directly.
+
+<<Public interface of the renderer (macOS)>>=
+static constexpr int kMeshSegments = 256;
+
+bool Init();
+void Shutdown();
+// Starts the command buffer that receives all of this frame's GPU work: the scene
+// first, then the user interface (see main.mm, which commits it).
+MTL::CommandBuffer* BeginFrame();
+
+bool ReloadShaders(const std::filesystem::path& dir, std::string& log);
+
+// Renders the 3D scene into an offscreen target of the given size and returns
+// a texture with the result that ImGui can display.
+MTL::Texture* RenderScene(uint32_t width, uint32_t height, const FrameConstants& fc,
+                          const Material& material, Shape shape,
+                          const std::vector<LineVertex>& lines);
+
+MTL::Device* Device() const { return device_.get(); }
+MTL::CommandQueue* Queue() const { return queue_.get(); }
+
+@
+<<Private helpers of the renderer (macOS)>>=
+struct GpuMesh {
+    NS::SharedPtr<MTL::Buffer> vb, ib;
+    NS::UInteger indexCount = 0;
+};
+void EnsureSceneTarget(uint32_t width, uint32_t height);
+GpuMesh& MeshFor(Shape shape);
+
+@ The command buffer of the frame is not owned by the renderer; see
+<<Start the command buffer of the frame>>.
+
+<<Device, queue and the command buffer of the frame>>=
+NS::SharedPtr<MTL::Device> device_;
+NS::SharedPtr<MTL::CommandQueue> queue_;
+MTL::CommandBuffer* frame_ = nullptr;  // owned by the autorelease pool of the frame
+
+@ The scene target has one texture more than in Direct3D: |resolvedUnorm_| is the
+non-sRGB view of the resolved image, the counterpart of the |UNORM| shader resource view.
+
+<<The off-screen scene target (macOS)>>=
+// Offscreen scene target: 4x MSAA color + depth, resolved to a single-sample texture.
+uint32_t sceneW_ = 0, sceneH_ = 0;
+NS::SharedPtr<MTL::Texture> msaaColor_, resolved_, resolvedUnorm_, depth_;
+
+@ Two pipeline states replace the Windows version's pairs of shaders and input layouts,
+its blend state and its rasterizer state.
+
+<<Pipeline objects (macOS)>>=
+NS::SharedPtr<MTL::RenderPipelineState> meshPipeline_, linePipeline_;
+NS::SharedPtr<MTL::SamplerState> sampler_;
+NS::SharedPtr<MTL::DepthStencilState> depthOn_, depthOff_;
+NS::SharedPtr<MTL::Texture> fallbackGray_;
+GpuMesh meshes_[int(Shape::Count)];
+static constexpr size_t kMaxLineVertices = 4096;
+
+@ metal-cpp is a header-only library, but its headers contain the definitions of many
+private symbols (the Objective-C selectors and classes it calls). Exactly one source file
+of the program must compile them, by defining the two macros below before including
+the headers.
+
+<<file:mac/src/Renderer.cpp>>=
+// metal-cpp is header-only; exactly one source file compiles its implementation.
+#define NS_PRIVATE_IMPLEMENTATION
+#define MTL_PRIVATE_IMPLEMENTATION
+#include "Renderer.h"
+#include <algorithm>
+#include <fstream>
+#include <sstream>
+
+<<Functions of the renderer (macOS)>>
+
+@ \emph{Initialization} creates the objects that never change. Compare it with the
+Windows version: there is no swap chain, and no rasterizer or blend state.
+
+<<Functions of the renderer (macOS)>>=
+bool Renderer::Init() {
+    <<Create the device and the command queue>>
+
+    <<Create the sampler (macOS)>>
+
+    <<Create the depth states (macOS)>>
+
+    <<Create a grey texture for missing maps (macOS)>>
+    return true;
+}
+
+@ A Mac may have several GPUs; the system default device is the one that drives the main
+display. The command queue lives as long as the program.
+
+<<Create the device and the command queue>>=
+device_ = NS::TransferPtr(MTL::CreateSystemDefaultDevice());
+if (!device_) return false;
+queue_ = NS::TransferPtr(device_->newCommandQueue());
+
+@ Metal objects are created from \emph{descriptors}, small mutable objects that are
+discarded afterwards, where Direct3D fills plain structures. The sampler is the same one:
+trilinear with up to $8\times$ anisotropy, repeating in every direction.
+
+<<Create the sampler (macOS)>>=
+// Fixed pipeline state.
+MTL::SamplerDescriptor* samp = MTL::SamplerDescriptor::alloc()->init();
+samp->setMinFilter(MTL::SamplerMinMagFilterLinear);
+samp->setMagFilter(MTL::SamplerMinMagFilterLinear);
+samp->setMipFilter(MTL::SamplerMipFilterLinear);
+samp->setMaxAnisotropy(8);
+samp->setSAddressMode(MTL::SamplerAddressModeRepeat);
+samp->setTAddressMode(MTL::SamplerAddressModeRepeat);
+samp->setRAddressMode(MTL::SamplerAddressModeRepeat);
+sampler_ = NS::TransferPtr(device_->newSamplerState(samp));
+samp->release();
+
+@ Two depth states: the normal one for the surface and the second pass of the lines, and
+one that neither tests nor writes depth for the faint ``x-ray'' pass of the lines.
+
+<<Create the depth states (macOS)>>=
+MTL::DepthStencilDescriptor* ds = MTL::DepthStencilDescriptor::alloc()->init();
+ds->setDepthCompareFunction(MTL::CompareFunctionLessEqual);
+ds->setDepthWriteEnabled(true);
+depthOn_ = NS::TransferPtr(device_->newDepthStencilState(ds));
+ds->setDepthCompareFunction(MTL::CompareFunctionAlways);
+ds->setDepthWriteEnabled(false);
+depthOff_ = NS::TransferPtr(device_->newDepthStencilState(ds));
+ds->release();
+
+@
+<<Create a grey texture for missing maps (macOS)>>=
+// 1x1 mid-gray texture bound when a material lacks a map.
+const uint32_t gray = 0xff808080;
+MTL::TextureDescriptor* td = MTL::TextureDescriptor::texture2DDescriptor(MTL::PixelFormatRGBA8Unorm, 1, 1, false);
+td->setUsage(MTL::TextureUsageShaderRead);
+fallbackGray_ = NS::TransferPtr(device_->newTexture(td));
+fallbackGray_->replaceRegion(MTL::Region::Make2D(0, 0, 1, 1), 0, &gray, 4);
+
+@ Shutting down releases the meshes; every other object is released by its |SharedPtr|.
+
+<<Functions of the renderer (macOS)>>=
+void Renderer::Shutdown() {
+    for (GpuMesh& m : meshes_) m = GpuMesh{};
+}
+
+@ The command buffer of a frame comes from the queue. Like every object returned by a
+function whose name does not start with |new|, it belongs to the \emph{autorelease pool}
+that is active when it is created, which here is the pool that the main program opens
+around each frame (<<The frame>>). The renderer keeps only a plain pointer to it.
+
+<<Functions of the renderer (macOS)>>=
+<<Start the command buffer of the frame>>
+
+@
+<<Start the command buffer of the frame>>=
+MTL::CommandBuffer* Renderer::BeginFrame() {
+    frame_ = queue_->commandBuffer();
+    return frame_;
+}
+
+@ \emph{Compiling shaders at run time.} The Windows version compiles HLSL with
+|D3DCompileFromFile|. Metal can compile source text too: |newLibrary| turns a string of
+MSL into a \emph{library} of compiled functions. (The usual practice for a finished
+product is to compile the shaders with the build into a \texttt{.metallib} file; compiling
+at run time is what makes editing and reloading with F5 possible.) Messages of the
+compiler, warnings as well as errors, are collected in |log|, which the user interface
+shows.
+
+<<Functions of the renderer (macOS)>>=
+static NS::String* Str(const std::string& s) { return NS::String::string(s.c_str(), NS::UTF8StringEncoding); }
+
+@
+<<Functions of the renderer (macOS)>>=
+static NS::SharedPtr<MTL::Library> Compile(MTL::Device* device, const std::filesystem::path& file,
+                                           std::string& log) {
+    std::ifstream in(file);
+    if (!in) {
+        log += "Cannot open " + file.string() + "\n";
+        return {};
+    }
+    std::stringstream source;
+    source << in.rdbuf();
+    NS::Error* error = nullptr;
+    MTL::CompileOptions* options = MTL::CompileOptions::alloc()->init();
+    MTL::Library* lib = device->newLibrary(Str(source.str()), options, &error);
+    options->release();
+    if (error) log += file.filename().string() + ": " + error->localizedDescription()->utf8String() + "\n";
+    return NS::TransferPtr(lib);
+}
+
+@ Reloading the shaders builds the two pipeline states. As in Direct3D, nothing replaces
+the working objects until all the new ones exist, so an error in an edited shader leaves
+the previous version running.
+
+<<Functions of the renderer (macOS)>>=
+bool Renderer::ReloadShaders(const std::filesystem::path& dir, std::string& log) {
+    <<Compile the shader files and find their entry points>>
+
+    <<Describe the vertex layouts to Metal>>
+
+    <<Create the pipeline state of the surface>>
+
+    <<Create the pipeline state of the lines>>
+
+    <<Keep the new pipeline states only if both were created>>
+}
+
+@ The entry points are looked up by name in the libraries.
+
+<<Compile the shader files and find their entry points>>=
+log.clear();
+auto pbr = Compile(device_.get(), dir / "pbr.metal", log);
+auto gizmo = Compile(device_.get(), dir / "gizmo.metal", log);
+if (!pbr || !gizmo) return false;  // keep the previous working shaders
+auto vs = NS::TransferPtr(pbr->newFunction(Str("VSMain")));
+auto ps = NS::TransferPtr(pbr->newFunction(Str("PSMain")));
+auto lvs = NS::TransferPtr(gizmo->newFunction(Str("VSLine")));
+auto lps = NS::TransferPtr(gizmo->newFunction(Str("PSLine")));
+if (!vs || !ps || !lvs || !lps) {
+    log += "Missing shader function\n";
+    return false;
+}
+
+@ A \emph{vertex descriptor} says, for each |[[attribute(n)]]| of the vertex shader, its
+format, its offset in the vertex and the buffer it comes from; the layout of the buffer
+gives the stride. It is the same information as the |D3D11_INPUT_ELEMENT_DESC| arrays of
+the first part, except that attributes are matched by number instead of by semantic name.
+
+<<Describe the vertex layouts to Metal>>=
+// The vertex descriptor is Metal's input layout.
+MTL::VertexDescriptor* meshElems = MTL::VertexDescriptor::alloc()->init();
+const MTL::VertexFormat formats[] = {MTL::VertexFormatFloat3, MTL::VertexFormatFloat3, MTL::VertexFormatFloat4,
+                                     MTL::VertexFormatFloat2};
+const size_t offsets[] = {offsetof(Vertex, pos), offsetof(Vertex, normal), offsetof(Vertex, tangent),
+                          offsetof(Vertex, uv)};
+for (int a = 0; a < 4; ++a) {
+    meshElems->attributes()->object(a)->setFormat(formats[a]);
+    meshElems->attributes()->object(a)->setOffset(offsets[a]);
+    meshElems->attributes()->object(a)->setBufferIndex(0);
+}
+meshElems->layouts()->object(0)->setStride(sizeof(Vertex));
+MTL::VertexDescriptor* lineElems = MTL::VertexDescriptor::alloc()->init();
+lineElems->attributes()->object(0)->setFormat(MTL::VertexFormatFloat3);
+lineElems->attributes()->object(0)->setOffset(offsetof(LineVertex, pos));
+lineElems->attributes()->object(1)->setFormat(MTL::VertexFormatFloat4);
+lineElems->attributes()->object(1)->setOffset(offsetof(LineVertex, color));
+lineElems->layouts()->object(0)->setStride(sizeof(LineVertex));
+
+@ \emph{Pipeline states.} Direct3D~11 lets a program combine shaders, input layout, blend
+state and render target formats freely at draw time, and the driver must then produce GPU
+code for whatever combination appears, sometimes in the middle of a frame. Metal (like
+Direct3D~12 and Vulkan) requires the combination to be declared in advance and compiled
+once into an immutable \emph{pipeline state}. The descriptor therefore also states the
+formats of the targets it will draw into: four samples per pixel, an sRGB colour target
+and a 32-bit depth buffer.
+
+<<Create the pipeline state of the surface>>=
+// A pipeline state object bundles the shaders, the input layout, the formats of the
+// render target and the blend state (separate objects in Direct3D 11).
+MTL::RenderPipelineDescriptor* pd = MTL::RenderPipelineDescriptor::alloc()->init();
+pd->setRasterSampleCount(4);
+pd->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatRGBA8Unorm_sRGB);
+pd->setDepthAttachmentPixelFormat(MTL::PixelFormatDepth32Float);
+pd->setVertexFunction(vs.get());
+pd->setFragmentFunction(ps.get());
+pd->setVertexDescriptor(meshElems);
+NS::Error* error = nullptr;
+auto newMesh = NS::TransferPtr(device_->newRenderPipelineState(pd, &error));
+if (error) log += std::string(error->localizedDescription()->utf8String()) + "\n";
+
+@ The lines use the same descriptor with blending switched on (the equation of the
+Windows blend state: $c = \alpha_s c_s + (1-\alpha_s)c_d$) and their own shaders and
+vertex layout.
+
+<<Create the pipeline state of the lines>>=
+auto* rt = pd->colorAttachments()->object(0);
+rt->setBlendingEnabled(true);
+rt->setSourceRGBBlendFactor(MTL::BlendFactorSourceAlpha);
+rt->setDestinationRGBBlendFactor(MTL::BlendFactorOneMinusSourceAlpha);
+rt->setRgbBlendOperation(MTL::BlendOperationAdd);
+rt->setSourceAlphaBlendFactor(MTL::BlendFactorOne);
+rt->setDestinationAlphaBlendFactor(MTL::BlendFactorZero);
+rt->setAlphaBlendOperation(MTL::BlendOperationAdd);
+pd->setVertexFunction(lvs.get());
+pd->setFragmentFunction(lps.get());
+pd->setVertexDescriptor(lineElems);
+error = nullptr;
+auto newLine = NS::TransferPtr(device_->newRenderPipelineState(pd, &error));
+if (error) log += std::string(error->localizedDescription()->utf8String()) + "\n";
+pd->release();
+meshElems->release();
+lineElems->release();
+
+@
+<<Keep the new pipeline states only if both were created>>=
+if (!newMesh || !newLine) {
+    log += "Failed to create shader objects\n";
+    return false;
+}
+meshPipeline_ = newMesh;
+linePipeline_ = newLine;
+return true;
+
+@ \emph{The scene target} is recreated whenever the viewport changes size. As in
+Direct3D it has three parts: a multisampled colour texture with four samples per pixel, a
+multisampled depth texture, and a single-sample texture that receives the resolved
+image. The colour textures are sRGB, so that lighting is computed in linear space and
+encoded when written; the resolved texture also allows a \emph{view} without sRGB, through
+which ImGui shows the encoded bytes unchanged on the (non-sRGB) screen---the role of the
+typeless format in the first part.
+
+The storage mode |Private| means that only the GPU accesses these textures, which is all
+they need.
+
+<<Functions of the renderer (macOS)>>=
+void Renderer::EnsureSceneTarget(uint32_t width, uint32_t height) {
+    if (width == sceneW_ && height == sceneH_ && msaaColor_) return;
+    sceneW_ = width;
+    sceneH_ = height;
+    // Rendered as sRGB (gamma-correct lighting) but shown by ImGui through a UNORM view,
+    // i.e. the already-encoded values reach the screen untouched.
+    MTL::TextureDescriptor* td = MTL::TextureDescriptor::texture2DDescriptor(
+        MTL::PixelFormatRGBA8Unorm_sRGB, width, height, false);
+    td->setTextureType(MTL::TextureType2DMultisample);
+    td->setSampleCount(4);
+    td->setUsage(MTL::TextureUsageRenderTarget);
+    td->setStorageMode(MTL::StorageModePrivate);
+    msaaColor_ = NS::TransferPtr(device_->newTexture(td));
+
+    td->setTextureType(MTL::TextureType2D);
+    td->setSampleCount(1);
+    td->setUsage(MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead | MTL::TextureUsagePixelFormatView);
+    resolved_ = NS::TransferPtr(device_->newTexture(td));
+    resolvedUnorm_ = NS::TransferPtr(resolved_->newTextureView(MTL::PixelFormatRGBA8Unorm));
+
+    td->setPixelFormat(MTL::PixelFormatDepth32Float);
+    td->setTextureType(MTL::TextureType2DMultisample);
+    td->setSampleCount(4);
+    td->setUsage(MTL::TextureUsageRenderTarget);
+    depth_ = NS::TransferPtr(device_->newTexture(td));
+}
+
+@ The meshes are built on first use, as in the first part. A buffer created together with
+its data is the counterpart of an immutable Direct3D buffer with initial data.
+
+<<Functions of the renderer (macOS)>>=
+Renderer::GpuMesh& Renderer::MeshFor(Shape shape) {
+    GpuMesh& m = meshes_[int(shape)];
+    if (m.vb) return m;
+    const MeshData data = BuildMesh(shape, kMeshSegments);
+    m.vb = NS::TransferPtr(device_->newBuffer(data.vertices.data(), data.vertices.size() * sizeof(Vertex),
+                                              MTL::ResourceStorageModeShared));
+    m.ib = NS::TransferPtr(device_->newBuffer(data.indices.data(), data.indices.size() * sizeof(uint32_t),
+                                              MTL::ResourceStorageModeShared));
+    m.indexCount = data.indices.size();
+    return m;
+}
+
+@ \emph{Rendering the scene} records one render pass into the command buffer of the frame.
+Nothing is drawn yet when this function returns: the pass runs on the GPU after the frame's
+command buffer is committed, before the user interface that shows its result.
+
+<<Functions of the renderer (macOS)>>=
+MTL::Texture* Renderer::RenderScene(uint32_t width, uint32_t height, const FrameConstants& fc,
+                                    const Material& material, Shape shape,
+                                    const std::vector<LineVertex>& lines) {
+    if (width == 0 || height == 0 || !meshPipeline_ || !frame_) return nullptr;
+    EnsureSceneTarget(width, height);
+
+    <<Describe the render pass: clear, then resolve>>
+
+    <<Start encoding and set the fixed state>>
+
+    <<Pass the frame constants>>
+
+    <<Draw the surface (macOS)>>
+
+    <<Draw the lines (macOS)>>
+
+    enc->endEncoding();
+    return resolvedUnorm_.get();
+}
+
+@ A render pass says what happens to each attachment at its start (the \emph{load
+action}) and at its end (the \emph{store action}). Clearing is a load action, so there is
+no separate clear call. Storing with |MultisampleResolve| averages the four samples of
+each pixel into the resolve texture as the pass ends; this replaces
+|ResolveSubresource|. The depth buffer is not needed after the pass, so it is not stored
+at all (|DontCare|), which saves memory traffic, especially on Apple GPUs, which keep the
+attachments of a pass in fast on-chip memory.
+
+<<Describe the render pass: clear, then resolve>>=
+// Clearing and resolving the multisampled target are actions of the render pass.
+MTL::RenderPassDescriptor* pass = MTL::RenderPassDescriptor::renderPassDescriptor();
+auto* color = pass->colorAttachments()->object(0);
+color->setTexture(msaaColor_.get());
+color->setResolveTexture(resolved_.get());
+color->setLoadAction(MTL::LoadActionClear);
+color->setClearColor(MTL::ClearColor::Make(0.035, 0.04, 0.05, 1));  // linear (sRGB target)
+color->setStoreAction(MTL::StoreActionMultisampleResolve);
+auto* depth = pass->depthAttachment();
+depth->setTexture(depth_.get());
+depth->setLoadAction(MTL::LoadActionClear);
+depth->setClearDepth(1);
+depth->setStoreAction(MTL::StoreActionDontCare);
+
+@ The render command encoder records the commands of one pass. The viewport and the
+culling mode, parts of the rasterizer state in Direct3D, are set on it directly.
+
+<<Start encoding and set the fixed state>>=
+MTL::RenderCommandEncoder* enc = frame_->renderCommandEncoder(pass);
+enc->setViewport(MTL::Viewport{0, 0, double(width), double(height), 0, 1});
+enc->setCullMode(MTL::CullModeNone);
+enc->setDepthStencilState(depthOn_.get());
+
+@ The Windows version writes the constants into a dynamic buffer with
+|Map(WRITE_DISCARD)|: the driver silently gives it fresh memory each time, so that the GPU
+can still read the previous frame's values. Metal does no such renaming behind the
+program's back. For small data (up to 4\,KB) it offers |setVertexBytes|, which copies the
+bytes into the command buffer itself; our 240 bytes qualify. They are bound at index~1 for
+both stages, matching |[[buffer(1)]]| in the shaders.
+
+<<Pass the frame constants>>=
+// Small constants are copied into the command buffer, so the next frame can change
+// them while the GPU still reads this frame's values.
+enc->setVertexBytes(&fc, sizeof(fc), 1);
+enc->setFragmentBytes(&fc, sizeof(fc), 1);
+
+@ The surface: pipeline, vertices, the four textures in slots 0--3 for both stages, the
+sampler, and one indexed draw. Unlike Direct3D~11, Metal needs no unbinding of the
+textures afterwards; it tracks by itself which passes write and which read each resource.
+
+<<Draw the surface (macOS)>>=
+// Surface
+GpuMesh& mesh = MeshFor(shape);
+enc->setRenderPipelineState(meshPipeline_.get());
+enc->setVertexBuffer(mesh.vb.get(), 0, 0);
+auto tex = [&](MapKind k, bool srgb) -> MTL::Texture* {
+    const auto& map = material.maps[k];
+    if (!map) return fallbackGray_.get();
+    return srgb ? map->texSrgb.get() : map->texLinear.get();
+};
+MTL::Texture* texs[4] = {tex(MapColor, true), tex(MapBump, false), tex(MapDisplacement, false),
+                         tex(MapRoughness, false)};
+enc->setVertexTextures(texs, NS::Range::Make(0, 4));
+enc->setFragmentTextures(texs, NS::Range::Make(0, 4));
+enc->setVertexSamplerState(sampler_.get(), 0);
+enc->setFragmentSamplerState(sampler_.get(), 0);
+enc->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle, mesh.indexCount, MTL::IndexTypeUInt32, mesh.ib.get(), 0);
+
+@ The lines are drawn twice, as in the first part: a faint pass that ignores depth and a
+normal pass on top. Since there is no |WRITE_DISCARD|, the vertices go into a new small
+buffer every frame. Releasing it at the end of the function is safe, because a command
+buffer keeps every resource it uses alive until the GPU has finished with it. (A larger
+program would keep a ring of buffers instead.)
+
+<<Draw the lines (macOS)>>=
+// Lines: a faint "x-ray" pass ignoring depth, then a depth-tested pass on top.
+if (!lines.empty()) {
+    const size_t n = std::min(lines.size(), kMaxLineVertices / 2);
+    // A new buffer each frame: the command buffer keeps it alive until the GPU is done.
+    auto vb = NS::TransferPtr(device_->newBuffer(2 * n * sizeof(LineVertex), MTL::ResourceStorageModeShared));
+    auto* dst = static_cast<LineVertex*>(vb->contents());
+    for (size_t i = 0; i < n; ++i) {
+        dst[i] = lines[i];
+        dst[i].color.w *= 0.3f;
+        dst[n + i] = lines[i];
+    }
+    enc->setRenderPipelineState(linePipeline_.get());
+    enc->setVertexBuffer(vb.get(), 0, 0);
+    enc->setDepthStencilState(depthOff_.get());
+    enc->drawPrimitives(MTL::PrimitiveTypeLine, NS::UInteger(0), NS::UInteger(n));
+    enc->setDepthStencilState(depthOn_.get());
+    enc->drawPrimitives(MTL::PrimitiveTypeLine, NS::UInteger(n), NS::UInteger(n));
+}

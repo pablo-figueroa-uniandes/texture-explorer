@@ -154,6 +154,8 @@ function Invoke-Tangle($web, [string]$dir) {
 $Keywords = @{
     cpp  = 'alignas auto bool break case catch char char8_t class const constexpr continue default delete do double else enum explicit extern false float for if inline int long namespace new nullptr operator private protected public return short signed size_t sizeof static static_assert static_cast reinterpret_cast struct switch template this throw true try typedef typename uint8_t uint32_t union unsigned using virtual void volatile while' -split ' '
     hlsl = 'cbuffer register row_major float float2 float3 float4 float4x4 int bool struct return if else static const for while void Texture2D SamplerState in out inout' -split ' '
+    metal = 'using namespace struct constant device vertex fragment float float2 float3 float4 float4x4 packed_float3 int bool return if else const for while void texture2d sampler' -split ' '
+    py   = 'def return if elif else for in import from while try except with as not and or None True False class pass raise lambda' -split ' '
     cmake = 'if endif else elseif foreach endforeach function endfunction' -split ' '
     ps   = 'param function foreach if else elseif return switch continue break try catch throw' -split ' '
 }
@@ -200,7 +202,7 @@ function Get-Tokens([string]$line, [string]$lang) {
     while ($i -lt $n) {
         $c = $line[$i]
         $rest = $line.Substring($i)
-        $hashComments = $lang -eq 'cmake' -or $lang -eq 'ps'
+        $hashComments = $lang -eq 'cmake' -or $lang -eq 'ps' -or $lang -eq 'py'
         if ((-not $hashComments -and $rest.StartsWith('//')) -or ($hashComments -and $c -eq '#')) {
             & $addWords $rest 'cm'; break
         }
@@ -210,7 +212,7 @@ function Get-Tokens([string]$line, [string]$lang) {
         if ($c -eq '"') {
             $m = [regex]::Match($rest, '^"(\\.|[^"\\])*"?'); & $addWords $m.Value 'str'; $i += $m.Length; continue
         }
-        if (($lang -eq 'cpp' -or $lang -eq 'ps') -and $c -eq "'") {
+        if (($lang -eq 'cpp' -or $lang -eq 'ps' -or $lang -eq 'py') -and $c -eq "'") {
             $m = [regex]::Match($rest, "^'(\\.|[^'\\])*'?"); $tokens.Add(@{ T = $m.Value; S = 'str' }); $i += $m.Length; continue
         }
         if ($lang -ne 'ps' -and $c -eq '#' -and $line.Substring(0, $i).Trim() -eq '') {
@@ -303,7 +305,7 @@ function Get-Language($web) {
     foreach ($name in $web.Chunks.Keys) {
         if (-not $name.StartsWith('file:')) { continue }
         $ext = [IO.Path]::GetExtension($name).ToLower()
-        $l = switch ($ext) { '.hlsl' { 'hlsl' } '.txt' { 'cmake' } '.ps1' { 'ps' } default { 'cpp' } }
+        $l = switch ($ext) { '.hlsl' { 'hlsl' } '.metal' { 'metal' } '.txt' { 'cmake' } '.ps1' { 'ps' } '.py' { 'py' } default { 'cpp' } }
         & $visit $name $l
     }
     return $lang

@@ -1,0 +1,68 @@
+@* The macOS port.
+\label{macport}Everything so far describes the program as it was first written, for Windows and
+Direct3D~11. The folder \texttt{mac} of the repository holds a second version of the same
+program for macOS, written for Apple's graphics interface, \emph{Metal}. The rest of this
+document presents that port with the same method as the first version. It has a second
+purpose: to show, as concretely as possible, which parts of a graphics program depend on
+the platform and which do not.
+
+The port was written under three rules.
+
+\begin{itemize}
+\item \emph{Same program.} The window shows the same panels with the same controls, the same
+defaults and the same materials (the folder \texttt{assets} is shared). A student who knows
+one version can use the other without instructions.
+\item \emph{Same structure.} Every file of \texttt{src} has a counterpart of the same name
+in \texttt{mac/src}, with the same classes and functions, so that the two can be read side by
+side. The shaders keep their names and their entry points.
+\item \emph{Same mathematics.} Shapes, sampling, the bump normal and the lighting model are
+computed by the same formulas in the same order. Section~\ref{compare} shows how this is
+checked by a program that compiles the CPU half of \emph{both} versions and compares their
+results.
+\end{itemize}
+
+@ What changes is the platform layer, which consists of four independent pieces:
+
+\medskip
+\begin{tabular}{lll}
+ & \textbf{Windows} & \textbf{macOS} \\
+vectors and matrices & DirectXMath & Apple's \texttt{simd} library \\
+GPU interface & Direct3D 11 & Metal, through \emph{metal-cpp} \\
+shading language & HLSL & Metal Shading Language (MSL) \\
+window and events & Win32 & Cocoa (AppKit) and MetalKit \\
+\end{tabular}
+\medskip
+
+Dear ImGui hides most of the last row, since it has back ends for both systems. Metal is an
+Objective-C interface, but Apple publishes \emph{metal-cpp}, a header-only C++ wrapper in
+which every Metal object is a C++ class (|MTL::Device|, |MTL::Texture|, \dots). With it, all
+of the port except the file that creates the window is ordinary C++, and the code can be
+compared line by line with the Direct3D version.
+
+@ The files of the port are these. The middle column names the Windows file that each one
+replaces.
+
+\medskip
+\begin{tabular}{lll}
+\texttt{mac/src/VecMath.h} & --- & the parts of DirectXMath it needs \\
+\texttt{mac/src/Mesh.h}, \texttt{.cpp} & \texttt{src/Mesh.*} & shapes; only the vector types differ \\
+\texttt{mac/src/Material.h}, \texttt{.cpp} & \texttt{src/Material.*} & Metal textures \\
+\texttt{mac/src/Inspector.h}, \texttt{.cpp} & \texttt{src/Inspector.*} & the probe; same formulas \\
+\texttt{mac/shaders/pbr.metal} & \texttt{shaders/pbr.hlsl} & the surface shader in MSL \\
+\texttt{mac/shaders/gizmo.metal} & \texttt{shaders/gizmo.hlsl} & the line shader in MSL \\
+\texttt{mac/src/Renderer.h}, \texttt{.cpp} & \texttt{src/Renderer.*} & the Metal renderer \\
+\texttt{mac/src/App.h}, \texttt{.cpp} & \texttt{src/App.*} & the user interface \\
+\texttt{mac/src/main.mm} & \texttt{src/main.cpp} & window and frame loop (Objective-C++) \\
+\texttt{mac/CMakeLists.txt} & \texttt{CMakeLists.txt} & the build description \\
+\texttt{mac/compare/*} & --- & compares the two versions \\
+\end{tabular}
+\medskip
+
+@ \emph{How to read this part.} Wherever a piece of the port is \emph{identical} to a piece
+of the Windows version, the port's file refers to the module defined in the first part
+instead of repeating it. The note under such a module then says that it is used in two
+sections, one in each version, and the index of module names at the end lists all of them.
+Because \texttt{lp.ps1 check} tangles both versions from this one document and compares
+them with the repository, this sharing is not a claim that may become stale: if one copy
+is changed and not the other, the check fails. Everything else in this part is new code,
+and the commentary concentrates on how it differs from its Windows counterpart.

@@ -160,21 +160,25 @@ interpolates first along $x$ on two rows and then along $y$.
 
 <<Bilinear sampling on the CPU>>=
 XMFLOAT4 MapImage::Sample(float u, float v) const {
-    // Same convention as the GPU: texel centers sit at (i + 0.5) / size.
-    const float x = u * width - 0.5f, y = v * height - 0.5f;
-    const int x0 = int(std::floor(x)), y0 = int(std::floor(y));
-    const float fx = x - x0, fy = y - y0;
-    float out[4] = {};
-    for (int c = 0; c < 4; ++c) {
-        auto at = [&](int xi, int yi) {
-            return rgba[(size_t(Wrap(yi, height)) * width + Wrap(xi, width)) * 4 + c] / 255.0f;
-        };
-        const float top = at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx;
-        const float bot = at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx;
-        out[c] = top * (1 - fy) + bot * fy;
-    }
-    return {out[0], out[1], out[2], out[3]};
+    <<Interpolate between the four nearest texels>>
 }
+
+@
+<<Interpolate between the four nearest texels>>=
+// Same convention as the GPU: texel centers sit at (i + 0.5) / size.
+const float x = u * width - 0.5f, y = v * height - 0.5f;
+const int x0 = int(std::floor(x)), y0 = int(std::floor(y));
+const float fx = x - x0, fy = y - y0;
+float out[4] = {};
+for (int c = 0; c < 4; ++c) {
+    auto at = [&](int xi, int yi) {
+        return rgba[(size_t(Wrap(yi, height)) * width + Wrap(xi, width)) * 4 + c] / 255.0f;
+    };
+    const float top = at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx;
+    const float bot = at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx;
+    out[c] = top * (1 - fy) + bot * fy;
+}
+return {out[0], out[1], out[2], out[3]};
 
 @ \emph{Loading an image} has two halves: decoding the file into memory, and creating
 the GPU texture from that memory.
@@ -309,14 +313,18 @@ void MaterialLibrary::EnsureLoaded(int index, ID3D11Device* device, ID3D11Device
     for (int k = 0; k < MapCount; ++k)
         if (!m.files[k].empty())
             m.maps[k] = LoadImage(dir_ / std::filesystem::path(reinterpret_cast<const char8_t*>(m.files[k].c_str())), k == MapColor, device, ctx);
-    // A bump map is a height field used only for shading. When a pack has no separate
-    // one, the height (displacement) map is the bump map.
-    if (!m.maps[MapBump]) {
-        m.maps[MapBump] = m.maps[MapDisplacement];
-        m.bumpFromHeight = true;
-    } else {
-        m.bumpFromHeight = false;
-    }
+    <<Use the height map as the bump map if there is none>>
+}
+
+@
+<<Use the height map as the bump map if there is none>>=
+// A bump map is a height field used only for shading. When a pack has no separate
+// one, the height (displacement) map is the bump map.
+if (!m.maps[MapBump]) {
+    m.maps[MapBump] = m.maps[MapDisplacement];
+    m.bumpFromHeight = true;
+} else {
+    m.bumpFromHeight = false;
 }
 
 @ \label{fetch}\emph{Collecting the materials.} The ten example materials are not part

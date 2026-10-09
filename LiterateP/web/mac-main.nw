@@ -1,0 +1,250 @@
+@* macOS: the main program.
+\label{macmain}The Windows main program creates a window with the Win32 interface and runs
+a loop that alternates between processing the messages of the window and drawing a frame.
+A Mac program is organized the other way round. The application object of AppKit,
+|NSApplication|, owns the loop; the program provides a \emph{delegate}, an object whose
+methods the application calls when something happens: the program has started, a window
+is closing, the program is about to quit. The drawing is driven the same way, by a
+|MTKView|---a view of MetalKit that owns the drawable images of the window (the
+counterpart of the swap chain) and asks its own delegate to draw once per refresh of the
+display.
+
+AppKit is an Objective-C interface, so this one file is written in Objective-C++, the
+mixture of C++ and Objective-C that Apple's compiler accepts in files ending in
+\texttt{.mm}. Two pieces of Objective-C syntax are enough to read it:
+|[object message:argument]| sends a message, that is, calls a method; and
+|@interface|/|@implementation| declare and define a class. Objective-C references to Metal
+objects (|id<MTLDevice>|) and metal-cpp pointers (|MTL::Device*|) designate the same
+objects, so converting one into the other is a simple cast, written |(__bridge T)p|.
+
+<<file:mac/src/main.mm>>=
+// Texture Explorer (macOS) - an interactive Metal tool for learning about texturing:
+// color, bump, displacement and roughness maps, UV space and tangent-space normals.
+// This is the only Objective-C++ file: it creates the window and runs the frame loop.
+// Everything else is C++, using Metal through metal-cpp.
+#include "App.h"
+#include <imgui.h>
+#include <imgui_impl_metal.h>
+#include <imgui_impl_osx.h>
+#import <Cocoa/Cocoa.h>
+#import <MetalKit/MetalKit.h>
+#include <chrono>
+#include <string>
+
+<<The delegate of the application>>
+
+<<The main program (macOS)>>
+
+@ One object serves as the delegate of the application, of the window and of the view.
+Its instance variables are the application of the first part, the window, the view and
+the time of the previous frame.
+
+<<The delegate of the application>>=
+// A metal-cpp pointer and an Objective-C reference name the same object: converting one
+// into the other is a cast.
+@interface AppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, MTKViewDelegate>
+@end
+
+@implementation AppDelegate {
+    App* _app;
+    NSWindow* _window;
+    MTKView* _view;
+    std::chrono::steady_clock::time_point _last;
+}
+
+<<Start the program>>
+
+<<The frame>>
+
+<<Respond to the other events>>
+@end
+
+@ When the application has finished launching, the delegate creates everything, in the
+order of the Windows version: the application (which creates the Metal device), the
+window, and Dear ImGui.
+
+<<Start the program>>=
+- (void)applicationDidFinishLaunching:(NSNotification*)notification {
+    <<Initialize the application, or give up>>
+
+    <<Create the window and its Metal view>>
+
+    <<Initialize Dear ImGui (macOS)>>
+
+    _last = std::chrono::steady_clock::now();
+    [NSApp activateIgnoringOtherApps:YES];
+}
+
+@ |NSAlert| is the counterpart of |MessageBoxW|. The device created by the renderer is
+needed in its Objective-C form by the view and by the Metal back end of ImGui.
+
+<<Initialize the application, or give up>>=
+_app = new App();
+if (!_app->Init()) {
+    NSAlert* alert = [[[NSAlert alloc] init] autorelease];
+    alert.messageText = @"Could not create a Metal device.";
+    [alert runModal];
+    [NSApp terminate:nil];
+    return;
+}
+id<MTLDevice> device = (__bridge id<MTLDevice>)_app->GetRenderer().Device();
+
+@ The window has the size of the Windows version, $1600\times950$, unless the screen is
+smaller. Its content is the Metal view. The pixel format of the view's drawables is
+|BGRA8Unorm|, \emph{not} sRGB, like the swap chain of the first part: the interface and
+the already-encoded scene image are written to the screen as they are.
+
+<<Create the window and its Metal view>>=
+const NSRect screen = NSScreen.mainScreen.visibleFrame;
+const NSRect frame = NSMakeRect(0, 0, MIN(1600, screen.size.width * 0.95), MIN(950, screen.size.height * 0.95));
+_window = [[NSWindow alloc] initWithContentRect:frame
+                                      styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                                                NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
+                                        backing:NSBackingStoreBuffered
+                                          defer:NO];
+_window.title = @"Texture Explorer - bump, displacement & roughness maps";
+_window.delegate = self;
+[_window center];
+
+// MTKView owns the drawable (the swap chain) and calls drawInMTKView: once per display refresh.
+_view = [[MTKView alloc] initWithFrame:frame device:device];
+_view.colorPixelFormat = MTLPixelFormatBGRA8Unorm;
+_view.clearColor = MTLClearColorMake(0.08, 0.08, 0.09, 1);
+_view.preferredFramesPerSecond = 60;
+_view.delegate = self;
+_window.contentView = _view;
+[_window makeKeyAndOrderFront:nil];
+
+@ Dear ImGui is configured as on Windows, with three differences. The layout file goes to
+the user's \emph{Application Support} folder, because an application bundle is not the
+place for files that change. There is no scaling for the density of the display, since
+ImGui measures in points on macOS; but the font is rasterized at the density of the
+display and drawn at the inverse scale, so that text is sharp on a Retina screen. And the
+font is San Francisco, the system font of macOS, instead of Segoe UI.
+
+<<Initialize Dear ImGui (macOS)>>=
+IMGUI_CHECKVERSION();
+ImGui::CreateContext();
+ImGuiIO& io = ImGui::GetIO();
+io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_NavEnableKeyboard;
+// Keep the window layout in the user's Application Support folder.
+static std::string iniPath;
+{
+    NSString* dir = [NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES)
+                         .firstObject stringByAppendingPathComponent:@"TextureExplorer"];
+    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    iniPath = std::string(dir.UTF8String) + "/imgui.ini";
+    io.IniFilename = iniPath.c_str();
+}
+ImGui::StyleColorsDark();
+ImGuiStyle& style = ImGui::GetStyle();
+style.WindowRounding = 4;
+style.FrameRounding = 3;
+// ImGui works in points; the font is rasterized at the pixel density of the display.
+const float scale = float(_window.backingScaleFactor);
+const char* uiFont = "/System/Library/Fonts/SFNS.ttf";
+if ([NSFileManager.defaultManager fileExistsAtPath:@(uiFont)] &&
+    io.Fonts->AddFontFromFileTTF(uiFont, 16.0f * scale))
+    io.FontGlobalScale = 1.0f / scale;  // otherwise the built-in font is used
+ImGui_ImplMetal_Init(device);
+ImGui_ImplOSX_Init(_view);
+
+@ \emph{The frame.} This method replaces the body of the main loop of the first part.
+Compare the two step by step:
+
+\begin{enumerate}
+\item The time since the previous frame is measured in the same way.
+\item The renderer starts the frame's command buffer. Then the view is asked for its
+\emph{render pass descriptor}, whose colour attachment is the next drawable of the window.
+Asking for it may wait until the display releases a drawable; this is how the frame rate
+is tied to the display, the role of |Present(vsync)| on Windows.
+\item ImGui starts a frame, the application builds the interface---and, inside the
+``Viewport'' panel, records the render pass of the scene into the command buffer
+(<<Functions of the renderer (macOS)>>).
+\item The interface is drawn in a second render pass, into the drawable.
+\item The command buffer is told to present the drawable when it has been executed, and
+it is committed. Only now does the GPU start working on the frame.
+\end{enumerate}
+
+The whole method runs inside an \emph{autorelease pool}: every object that Metal or AppKit
+returned during the frame without giving it to the program for keeping (the command
+buffer, the encoders, the descriptors) is released when the pool ends, at the end of the
+frame.
+
+<<The frame>>=
+- (void)drawInMTKView:(MTKView*)view {
+    @autoreleasepool {
+        const auto now = std::chrono::steady_clock::now();
+        const float dt = std::chrono::duration<float>(now - _last).count();
+        _last = now;
+
+        id<MTLCommandBuffer> cmd = (__bridge id<MTLCommandBuffer>)_app->GetRenderer().BeginFrame();
+        MTLRenderPassDescriptor* pass = view.currentRenderPassDescriptor;  // waits for a free drawable
+        if (!pass) {
+            [cmd commit];
+            return;
+        }
+        ImGui_ImplMetal_NewFrame(pass);
+        ImGui_ImplOSX_NewFrame(view);
+        ImGui::NewFrame();
+        _app->Frame(dt);  // the scene's render pass is encoded into cmd here
+        ImGui::Render();
+
+        id<MTLRenderCommandEncoder> enc = [cmd renderCommandEncoderWithDescriptor:pass];
+        ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cmd, enc);
+        [enc endEncoding];
+        [cmd presentDrawable:view.currentDrawable];
+        [cmd commit];
+    }
+}
+
+@ The remaining events. Resizing the window needs no work, unlike |WM_SIZE| in the first
+part, because the view resizes its drawables itself. Closing the window quits the program,
+and quitting releases everything in the reverse order of creation.
+
+<<Respond to the other events>>=
+- (void)mtkView:(MTKView*)view drawableSizeWillChange:(CGSize)size {
+    // Nothing to do: MTKView resizes its drawables itself.
+}
+
+- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
+    return YES;
+}
+
+- (void)applicationWillTerminate:(NSNotification*)notification {
+    if (!_app) return;
+    _view.delegate = nil;
+    if (ImGui::GetCurrentContext()) {
+        ImGui_ImplMetal_Shutdown();
+        ImGui_ImplOSX_Shutdown();
+        ImGui::DestroyContext();
+    }
+    _app->Shutdown();
+    delete _app;
+    _app = nullptr;
+}
+
+@ The main program creates the application object, gives it a minimal menu bar---without
+one, Command-Q would not quit---and a delegate, and hands control to |run|, which returns
+only when the program ends.
+
+<<The main program (macOS)>>=
+int main(int, const char**) {
+    @autoreleasepool {
+        NSApplication* app = NSApplication.sharedApplication;
+        app.activationPolicy = NSApplicationActivationPolicyRegular;
+        // A minimal menu bar, so that Cmd+Q quits.
+        NSMenu* bar = [[[NSMenu alloc] init] autorelease];
+        NSMenuItem* appItem = [[[NSMenuItem alloc] init] autorelease];
+        NSMenu* appMenu = [[[NSMenu alloc] init] autorelease];
+        [appMenu addItemWithTitle:@"Quit Texture Explorer" action:@selector(terminate:) keyEquivalent:@"q"];
+        appItem.submenu = appMenu;
+        [bar addItem:appItem];
+        app.mainMenu = bar;
+
+        AppDelegate* delegate = [[AppDelegate alloc] init];
+        app.delegate = delegate;
+        [app run];
+    }
+    return 0;
+}

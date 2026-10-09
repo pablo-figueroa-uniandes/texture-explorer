@@ -1,0 +1,125 @@
+@* macOS: vectors and matrices.
+\label{macmath}The Windows version computes with DirectXMath, which does not exist on macOS. Its
+replacement is Apple's \texttt{simd} library, which offers vector types such as
+|simd::float3| and |simd::float4x4| that the compiler maps to SIMD registers, with the
+usual operators and functions (|simd::dot|, |simd::cross|, |simd::normalize|, \dots). The
+same types exist, with the same names, in the Metal Shading Language, which makes them the
+natural choice.
+
+The program needs only a few functions of DirectXMath beyond what \texttt{simd} provides:
+three matrix constructors and two transformations. They live in a small header.
+
+<<file:mac/src/VecMath.h>>=
+#pragma once
+<<Purpose of the vector header>>
+#include <simd/simd.h>
+#include <cmath>
+
+<<Storage types for GPU data>>
+
+constexpr float kDegToRad = 3.14159265358979f / 180.0f;
+
+<<The rotation about $y$>>
+
+<<The view matrix>>
+
+<<The projection matrix>>
+
+<<Transforming points and directions>>
+
+@ DirectXMath has two kinds of vector. |XMVECTOR| is a SIMD register for computing, and
+|XMFLOAT3| is a plain structure of three floats for storing; one moves between them with
+|XMLoadFloat3| and |XMStoreFloat3|. \texttt{simd} has the same distinction in a different
+form: a |simd::float3| occupies 16 bytes, like a register, so a structure of them does
+\emph{not} have the layout that the GPU expects for three packed floats. The port therefore
+defines its own storage types, |Float3| and |Float4|, and gives |Float3| conversions in both
+directions so that the two kinds mix freely in expressions.
+
+The matrices need more care. DirectXMath multiplies \emph{row} vectors by matrices,
+$\vect v' = \vect v M$, and \texttt{simd} multiplies matrices by \emph{column} vectors,
+$\vect v' = M\vect v$; each matrix of one library is therefore the transpose of the
+corresponding matrix of the other, and products appear in the opposite order. The
+functions below are written so that they compute exactly the same numbers as their
+DirectXMath namesakes.
+
+<<Purpose of the vector header>>=
+// The small part of DirectXMath that Texture Explorer needs, written with Apple's simd
+// library. simd::float3 plays the role of XMVECTOR (a 16-byte SIMD register); Float3 and
+// Float4 play the role of XMFLOAT3/XMFLOAT4 (tightly packed storage for GPU buffers).
+// Matrices are column-major and multiply column vectors (M * v), the opposite of
+// DirectXMath's row vectors (v * M); each function below builds the transpose of its
+// DirectXMath namesake, so both programs compute the same numbers.
+
+@ The storage types are deliberately simple aggregates of floats.
+
+<<Storage types for GPU data>>=
+struct Float3 {
+    float x = 0, y = 0, z = 0;
+    Float3() = default;
+    Float3(float x_, float y_, float z_) : x(x_), y(y_), z(z_) {}
+    Float3(simd::float3 v) : x(v.x), y(v.y), z(v.z) {}
+    operator simd::float3() const { return simd::float3{x, y, z}; }
+};
+
+struct Float4 {
+    float x = 0, y = 0, z = 0, w = 0;
+    Float4() = default;
+    Float4(float x_, float y_, float z_, float w_) : x(x_), y(y_), z(z_), w(w_) {}
+};
+
+@ A |simd::float4x4| is built from its four \emph{columns}. The rotation by an angle $a$
+about the $y$ axis sends $(x,y,z)$ to $(x\cos a+z\sin a,\ y,\ -x\sin a+z\cos a)$, which is
+what |XMMatrixRotationY| does to a row vector.
+
+<<The rotation about $y$>>=
+// XMMatrixRotationY: rotation about +y by angle a.
+inline simd::float4x4 MatrixRotationY(float a) {
+    const float c = std::cos(a), s = std::sin(a);
+    return simd::float4x4(simd::float4{c, 0, -s, 0}, simd::float4{0, 1, 0, 0}, simd::float4{s, 0, c, 0},
+                          simd::float4{0, 0, 0, 1});
+}
+
+@ The view matrix of a right-handed camera at |eye| looking at |focus| has the camera's
+axes as its \emph{rows}: $\vect z$ points from the focus back to the eye, $\vect x$ to the
+right and $\vect y$ up. The last column moves the eye to the origin.
+
+<<The view matrix>>=
+// XMMatrixLookAtRH: the camera at eye looks at focus, down its own -z axis.
+inline simd::float4x4 MatrixLookAtRH(simd::float3 eye, simd::float3 focus, simd::float3 up) {
+    const simd::float3 z = simd::normalize(eye - focus);
+    const simd::float3 x = simd::normalize(simd::cross(up, z));
+    const simd::float3 y = simd::cross(z, x);
+    return simd::float4x4(simd::float4{x.x, y.x, z.x, 0}, simd::float4{x.y, y.y, z.y, 0},
+                          simd::float4{x.z, y.z, z.z, 0},
+                          simd::float4{-simd::dot(x, eye), -simd::dot(y, eye), -simd::dot(z, eye), 1});
+}
+
+@ Here the two systems agree on something important: after division by $w$, Metal, like
+Direct3D, keeps depths between $0$ (near plane) and $1$ (far plane), not between $-1$ and
+$1$ as OpenGL does. Both also put $y$ up in clip space and the origin of a texture at its
+top-left corner. That is why the projection matrix, and everything about texture
+coordinates in the first part, carry over unchanged. With $h=\cot(\mathrm{fov}/2)$,
+$w=h/\mathrm{aspect}$ and $r=z_f/(z_n-z_f)$, the projection maps a point at depth $-z_n$
+to $0$ and one at $-z_f$ to $1$.
+
+<<The projection matrix>>=
+// XMMatrixPerspectiveFovRH: depth 0 at the near plane and 1 at the far plane, which is the
+// clip-space convention of Metal as well as of Direct3D.
+inline simd::float4x4 MatrixPerspectiveFovRH(float fovY, float aspect, float zn, float zf) {
+    const float h = 1.0f / std::tan(0.5f * fovY), w = h / aspect, r = zf / (zn - zf);
+    return simd::float4x4(simd::float4{w, 0, 0, 0}, simd::float4{0, h, 0, 0}, simd::float4{0, 0, r, -1},
+                          simd::float4{0, 0, r * zn, 0});
+}
+
+@ Points are transformed with $w=1$, so that the translation applies, and directions
+with $w=0$, so that it does not.
+
+<<Transforming points and directions>>=
+// XMVector3TransformCoord and XMVector3TransformNormal.
+inline simd::float3 TransformPoint(const simd::float4x4& m, simd::float3 p) {
+    const simd::float4 r = m * simd::float4{p.x, p.y, p.z, 1};
+    return r.xyz / r.w;
+}
+inline simd::float3 TransformNormal(const simd::float4x4& m, simd::float3 n) {
+    return (m * simd::float4{n.x, n.y, n.z, 0}).xyz;
+}

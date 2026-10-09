@@ -1,7 +1,7 @@
 # Texture Explorer as a literate program
 
 This folder holds the complete Texture Explorer program written as a *literate program*,
-in the style of Donald Knuth's WEB/CWEB. The program is presented as an essay of 193
+in the style of Donald Knuth's WEB/CWEB. The program is presented as an essay of 348
 numbered sections. Each section has some commentary and usually a piece of code, and the
 sections come in the order that is easiest to understand rather than the order the compiler
 needs.
@@ -9,7 +9,8 @@ needs.
 | File | Purpose |
 |---|---|
 | `TextureExplorer.nw` | The master file of the web: title material, plus the parts it includes |
-| `web/*.nw` | The parts: intro, shapes, materials, inspector, shaders, renderer, app, main, build |
+| `web/*.nw` | The parts of the Windows version: intro, shapes, materials, inspector, shaders, renderer, app, main, build |
+| `web/mac-*.nw` | The macOS port (`../mac`): its math, shapes, materials, inspector, Metal shaders, renderer, app, main and build, and the comparison of the two versions |
 | `lp.ps1` | The toolchain: **tangle** (web → source files), **check**, **weave** (web → LaTeX) and **pdf** |
 | `lpweb.sty` | The LaTeX style: Knuth-like section numbers, ⟨module⟩ names, cross-references and the index |
 | `out/TextureExplorer.pdf` | The typeset document (generated) |
@@ -18,6 +19,14 @@ needs.
 
 You need a TeX engine. Any one of these works: MiKTeX or TeX Live (`latexmk` or `pdflatex`),
 or the single-file [tectonic](https://tectonic-typesetting.github.io/).
+
+On macOS (or Linux) run the same script with PowerShell 7, `pwsh`
+(`brew install --cask powershell`; `brew install tectonic` for the TeX engine):
+
+```sh
+cd LiterateP
+pwsh lp.ps1 all
+```
 
 ```powershell
 cd LiterateP
@@ -33,9 +42,16 @@ lp.ps1 tangle    # write the program files into out\tangled (or -Target <dir>)
 lp.ps1 weave     # write out\TextureExplorer.tex only
 ```
 
-`check` proves that the document is the program. The 15 files it tangles (C++, HLSL, CMake
-and the PowerShell download script) must be byte-for-byte identical to the files in the
-repository. If you change the code, change the web as well, and run `check`.
+`check` proves that the document is the program. The 36 files it tangles must be
+byte-for-byte identical to the files in the repository: the Windows version (C++, HLSL,
+CMake and the PowerShell download script) and the macOS port in `../mac` (C++,
+Objective-C++, Metal Shading Language, CMake, and the Python and C++ of the comparison
+tool). If you change the code, change the web as well, and run `check`.
+
+The two versions share every module whose code is identical in both. Such a module is
+defined once, in the Windows part, and the woven document notes that it is used in two
+sections, one in each version. If someone changes one copy and not the other, `check`
+fails, so the document always shows exactly what the versions have in common.
 
 ## Syntax of the web
 

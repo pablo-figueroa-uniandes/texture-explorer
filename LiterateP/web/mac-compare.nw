@@ -1,0 +1,500 @@
+@* Comparing the two programs.
+\label{compare}There are now two implementations of one program, and a course can use them
+in three ways, from the most informal to the most precise.
+
+\emph{Reading.} Because every file of the port has a counterpart with the same name and the
+same functions, the two can be read side by side, and this document helps: in the index
+of module names, a module ``used in'' two sections belongs to both versions, and a module
+marked ``(macOS)'' or ``(Metal)'' is the counterpart of the module of the first part with
+the same name. The introductions of the macOS parts list the correspondences between the
+interfaces, notably the dictionary of Direct3D and Metal terms in the part on the
+renderer.
+
+\emph{Running.} Both programs start with the same material, shape, camera, light and
+settings, and their panels are laid out the same way, so the first image of each is the
+same picture. Pinning the probe on the same texel makes the inspectors print the same
+numbers, and the arrows land on the same point. The images differ in small ways that are
+worth discussing with students: the fonts; the thickness of the lines, which are one
+\emph{pixel} wide and therefore look thinner on a Retina display; and the last bit of some
+pixels, because two GPUs need not round the filtering of textures, the multisampling and
+the arithmetic of the shaders identically. Nothing in the specifications of Direct3D or
+Metal requires bit-identical images.
+
+\emph{Measuring.} The CPU half of the program---shapes, sampling and the inspector---\emph{can}
+be compared exactly, and the folder \texttt{mac/compare} contains a program that does it.
+The difficulty is that the two versions never run on the same computer. But the CPU half
+of the Windows version uses only standard C++, DirectXMath and a few declarations of
+Direct3D; DirectXMath is a header-only library that Microsoft publishes for other
+platforms too; and the Direct3D declarations can be replaced by stand-ins. So the very
+files \texttt{src/Mesh.cpp}, \texttt{src/Material.cpp} and \texttt{src/Inspector.cpp},
+unmodified, can be compiled on a Mac, next to their macOS counterparts.
+
+@ The program |probe| is compiled twice from one source file: once against the Windows
+sources and once against the port. Each copy prints the same report, and a small script
+compares the two reports number by number.
+
+\begin{verbatim}
+cmake -S mac/compare -B mac/compare/build
+cmake --build mac/compare/build --target compare
+\end{verbatim}
+
+At the time of writing, the result is this:
+
+\medskip
+\begin{tabular}{lr}
+\textbf{quantity} & \textbf{largest difference} \\
+mesh sizes and indices & 0 (identical) \\
+vertex positions, normals, tangents & $2\cdot10^{-7}$ \\
+vertex texture coordinates & 0 \\
+colour, bump, displacement, roughness at the probe & 0 \\
+slope of the height field & 0 \\
+tangent-space normal $\vect n_{ts}$ & $2\cdot10^{-7}$ \\
+world vectors $\vect N$, $\vect N'$, $\vect T$, $\vect B$ & $2\cdot10^{-7}$ \\
+world position of the probe & $1\cdot10^{-6}$ \\
+\end{tabular}
+\medskip
+
+The values read from the maps agree exactly, as they must, since they are computed by the
+same module with the same operations. The vectors differ in the last bit or two of a
+|float|, $2^{-23}\approx1.2\cdot10^{-7}$: DirectXMath and \texttt{simd} do the same
+arithmetic, but a normalization, for example, may multiply by a reciprocal square root
+in one library and divide by a square root in the other.
+
+<<file:mac/compare/CMakeLists.txt>>=
+<<Comment of the comparison's build>>
+cmake_minimum_required(VERSION 3.20)
+project(TextureExplorerCompare LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+get_filename_component(TEXEX_ROOT "${CMAKE_SOURCE_DIR}/../.." ABSOLUTE)
+
+<<Fetch the libraries of the comparison>>
+
+<<The probe of the Windows version>>
+
+<<The probe of the macOS version>>
+
+<<Run the comparison>>
+
+@
+<<Comment of the comparison's build>>=
+# Builds probe.cpp twice, against the Windows sources and against the macOS port, and runs
+# compare.py on the two results:
+#     cmake -S mac/compare -B mac/compare/build && cmake --build mac/compare/build --target compare
+
+@ The libraries of the two programs, and DirectXMath. Its own CMake project is not wanted,
+only its headers, which |SOURCE_SUBDIR| pointing to a folder that does not exist achieves.
+
+<<Fetch the libraries of the comparison>>=
+include(FetchContent)
+FetchContent_Declare(stb
+    GIT_REPOSITORY https://github.com/nothings/stb.git
+    GIT_TAG        2c980bb59875b0d32144a71867fbdebb2f77cd20)
+FetchContent_Declare(json
+    URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz)
+FetchContent_Declare(metalcpp
+    URL      https://developer.apple.com/metal/cpp/files/metal-cpp_26.zip
+    URL_HASH SHA256=4df3c078b9aadcb516212e9cb03004cbc5ce9a3e9c068fa3144d021db585a3a4)
+FetchContent_Declare(directxmath
+    GIT_REPOSITORY https://github.com/microsoft/DirectXMath.git
+    GIT_TAG        jun2026
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  none)  # headers only: do not add its own CMake project
+FetchContent_MakeAvailable(stb json metalcpp directxmath)
+
+@ The Windows probe compiles the three files of \texttt{src}. The folder \texttt{shims}
+comes first in the include path, so that |#include <d3d11.h>| finds the stand-in. The
+definition |_XM_NO_INTRINSICS_| selects the portable code of DirectXMath, which computes
+one component at a time instead of using SSE or NEON instructions.
+
+<<The probe of the Windows version>>=
+# The Windows version's own files, unchanged. DirectXMath is used without SSE/NEON
+# intrinsics, i.e. its portable scalar code.
+add_executable(probe_windows probe.cpp
+    ${TEXEX_ROOT}/src/Mesh.cpp ${TEXEX_ROOT}/src/Material.cpp ${TEXEX_ROOT}/src/Inspector.cpp)
+target_include_directories(probe_windows PRIVATE shims ${directxmath_SOURCE_DIR}/Inc ${TEXEX_ROOT}/src
+    ${stb_SOURCE_DIR})
+target_compile_definitions(probe_windows PRIVATE TEXEX_CORE_WINDOWS _XM_NO_INTRINSICS_)
+target_link_libraries(probe_windows PRIVATE nlohmann_json::nlohmann_json)
+
+@ The macOS probe uses Metal, because the port's |MaterialLibrary| uploads its textures;
+no window is needed for that.
+
+<<The probe of the macOS version>>=
+add_executable(probe_mac probe.cpp
+    ${TEXEX_ROOT}/mac/src/Mesh.cpp ${TEXEX_ROOT}/mac/src/Material.cpp ${TEXEX_ROOT}/mac/src/Inspector.cpp)
+target_include_directories(probe_mac PRIVATE ${TEXEX_ROOT}/mac/src ${metalcpp_SOURCE_DIR} ${stb_SOURCE_DIR})
+target_link_libraries(probe_mac PRIVATE nlohmann_json::nlohmann_json
+    "-framework Foundation" "-framework Metal" "-framework QuartzCore")
+
+@
+<<Run the comparison>>=
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_custom_target(compare
+    COMMAND Python3::Interpreter ${CMAKE_SOURCE_DIR}/compare.py
+        $<TARGET_FILE:probe_windows> $<TARGET_FILE:probe_mac> ${TEXEX_ROOT}
+    DEPENDS probe_windows probe_mac
+    USES_TERMINAL)
+
+@ \emph{The probe.} It prints three kinds of lines: the sizes of the four meshes, every
+997th vertex of each, and the full report of the inspector on a grid of texels for every
+material and shape---the corners of an $8\times8$ grid, borders included, where wrapping
+matters, and a second grid that falls between texel centres, where the interpolation
+matters. Each line begins with a key (the kind of line, the material, the shape, the
+texel) so that the reports can be matched line by line.
+
+The only differences between the two compilations are kept in preprocessor conditionals:
+the Windows version takes its world matrix from DirectXMath and loads its materials
+through the stand-in device; the macOS version creates a Metal device and queue. The
+macOS probe must also compile the implementation of metal-cpp, which in the program is
+done by \texttt{Renderer.cpp}.
+
+<<file:mac/compare/probe.cpp>>=
+// probe - prints what the CPU half of Texture Explorer computes: a sample of every mesh,
+// and the inspector's answer (values, slope, normals, surface point) on a grid of texels,
+// for every material and shape. The same file is compiled twice: against the Windows
+// sources in src/ (with TEXEX_CORE_WINDOWS, DirectXMath and the stand-ins in shims/) and
+// against the macOS port in mac/src/. compare.py then compares the two outputs.
+#ifdef TEXEX_CORE_WINDOWS
+#include "Inspector.h"
+static ID3D11Device g_device;
+static ID3D11DeviceContext g_context;
+#define TEXEX_CORE_NAME "windows (src/, DirectXMath)"
+#else
+#define NS_PRIVATE_IMPLEMENTATION
+#define MTL_PRIVATE_IMPLEMENTATION
+#include "Inspector.h"
+#define TEXEX_CORE_NAME "mac (mac/src/, simd)"
+#endif
+#include <cstdio>
+#include <filesystem>
+#include <string>
+
+namespace {
+<<Print vectors of either library>>
+
+<<Print the meshes>>
+
+<<Print one probe>>
+} // namespace
+
+<<The main program of the probe>>
+
+@ Both versions name the components of their vectors |x|, |y|, |z| and |w|, whatever the
+type, so one template serves |XMFLOAT3| and |simd::float3| alike. Seven significant digits
+are about the precision of a |float|.
+
+<<Print vectors of either library>>=
+// Both versions name their fields x, y, z, w, whatever the vector type.
+template <class V> void P2(const V& v) { std::printf(" %.7g %.7g", v.x, v.y); }
+template <class V> void P3(const V& v) { std::printf(" %.7g %.7g %.7g", v.x, v.y, v.z); }
+template <class V> void P4(const V& v) { std::printf(" %.7g %.7g %.7g %.7g", v.x, v.y, v.z, v.w); }
+
+@ The sum of the indices is a cheap check that the triangles are the same.
+
+<<Print the meshes>>=
+void PrintMeshes() {
+    for (int s = 0; s < int(Shape::Count); ++s) {
+        const MeshData mesh = BuildMesh(Shape(s), 256);
+        uint64_t indexSum = 0;
+        for (uint32_t i : mesh.indices) indexSum += i;
+        std::printf("mesh %s counts %zu %zu %llu\n", ShapeName(Shape(s)), mesh.vertices.size(), mesh.indices.size(),
+                    (unsigned long long)indexSum);
+        for (size_t i = 0; i < mesh.vertices.size(); i += 997) {
+            const Vertex& v = mesh.vertices[i];
+            std::printf("vertex %s %zu", ShapeName(Shape(s)), i);
+            P3(v.pos); P3(v.normal); P4(v.tangent); P2(v.uv);
+            std::printf("\n");
+        }
+    }
+}
+
+@ The solid is rotated by 0.7 radians, so that the world matrix is not the identity and its
+use is tested too.
+
+<<Print one probe>>=
+void PrintProbe(const Material& m, Shape shape, float u, float v, float angle) {
+#ifdef TEXEX_CORE_WINDOWS
+    const HoverInfo h = Inspect(m, u, v, shape, DirectX::XMMatrixRotationY(angle), BumpSettings{});
+#else
+    const HoverInfo h = Inspect(m, u, v, shape, MatrixRotationY(angle), BumpSettings{});
+#endif
+    std::printf("probe %s %s %.4f %.4f", m.id.c_str(), ShapeName(shape), u, v);
+    P3(h.color);
+    std::printf(" %.7g %.7g %.7g", h.bump, h.displacement, h.roughness);
+    P2(h.slope); P3(h.normalTangent);
+    std::printf(" %d", int(h.onSurface));
+    if (h.onSurface) {
+        P3(h.position); P3(h.normalGeom); P3(h.normalBumped); P3(h.tangent); P3(h.bitangent);
+    }
+    std::printf("\n");
+}
+
+@
+<<The main program of the probe>>=
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        std::fprintf(stderr, "usage: %s <repository root>\n", argv[0]);
+        return 2;
+    }
+    MaterialLibrary library;
+    std::string error;
+    if (!library.Load(std::filesystem::path(argv[1]) / "assets" / "materials", error)) {
+        std::fprintf(stderr, "%s\n", error.c_str());
+        return 1;
+    }
+#ifndef TEXEX_CORE_WINDOWS
+    NS::SharedPtr<MTL::Device> device = NS::TransferPtr(MTL::CreateSystemDefaultDevice());
+    NS::SharedPtr<MTL::CommandQueue> queue = NS::TransferPtr(device->newCommandQueue());
+#endif
+    std::printf("core %s\n", TEXEX_CORE_NAME);
+    PrintMeshes();
+    for (int i = 0; i < int(library.Items().size()); ++i) {
+#ifdef TEXEX_CORE_WINDOWS
+        library.EnsureLoaded(i, &g_device, &g_context);
+#else
+        library.EnsureLoaded(i, device.get(), queue.get());
+#endif
+        const Material& m = library.Items()[i];
+        for (int s = 0; s < int(Shape::Count); ++s)
+            for (int y = 0; y <= 8; ++y)
+                for (int x = 0; x <= 8; ++x) {
+                    PrintProbe(m, Shape(s), x / 8.0f, y / 8.0f, 0.7f);  // includes the borders
+                    PrintProbe(m, Shape(s), (x + 0.37f) / 9, (y + 0.61f) / 9, 0.7f);  // between texel centers
+                }
+    }
+    return 0;
+}
+
+@ \emph{The comparison.} The script runs both probes, files their lines by key, and for
+each kind of quantity reports the largest absolute difference. Counts must be equal;
+real numbers must agree within a tolerance, $10^{-5}$ unless another is given, which is a
+hundred times the differences of rounding and a thousand times smaller than anything a
+student would see in the inspector. A real discrepancy is far larger: changing the factor
+$\frac12$ of the central differences to $0.6$ in one version, for instance, makes the
+script fail with a difference of $0.03$ in the slope, and it names the texel where it
+happens.
+
+<<file:mac/compare/compare.py>>=
+#!/usr/bin/env python3
+"""Runs the two probe programs and compares what they print, quantity by quantity.
+
+    python3 compare.py <probe_windows> <probe_mac> <repository root> [tolerance]
+
+probe_windows is probe.cpp built from the Windows sources (src/), probe_mac the same file
+built from the macOS port (mac/src/). Counts must be equal; real numbers may differ by
+rounding only (the two math libraries order some float operations differently), so they
+are compared with an absolute tolerance, 1e-5 by default.
+"""
+import subprocess
+import sys
+
+<<The layout of the probe's lines>>
+
+
+<<Run one probe and file its lines by key>>
+
+
+<<Compare the two reports>>
+
+
+if __name__ == "__main__":
+    main()
+
+@
+<<The layout of the probe's lines>>=
+# The columns of each kind of line, after its key, grouped into named quantities.
+LAYOUT = {
+    "vertex": [("position", 3), ("normal", 3), ("tangent", 4), ("uv", 2)],
+    "probe": [("color", 3), ("bump, displacement, roughness", 3), ("slope", 2), ("n_ts", 3), ("on surface", 1),
+              ("world position", 3), ("world N", 3), ("world N'", 3), ("world T", 3), ("world B", 3)],
+}
+KEY_LENGTH = {"mesh": 3, "vertex": 3, "probe": 5}
+
+@
+<<Run one probe and file its lines by key>>=
+def run(program, root):
+    out = subprocess.run([program, root], check=True, capture_output=True, text=True).stdout
+    lines = out.splitlines()
+    print(f"  {program}: {lines[0][5:]}, {len(lines) - 1} lines")
+    table = {}
+    for line in lines[1:]:
+        words = line.split()
+        n = KEY_LENGTH[words[0]]
+        table[tuple(words[:n])] = words[n:]
+    return table
+
+@ Lines of different lengths (a probe that lands on the solid in one version and not in
+the other) and the lines of mesh sizes are compared as text; everything else column
+group by column group.
+
+<<Compare the two reports>>=
+def main():
+    if len(sys.argv) < 4:
+        sys.exit(__doc__)
+    tolerance = float(sys.argv[4]) if len(sys.argv) > 4 else 1e-5
+    win = run(sys.argv[1], sys.argv[3])
+    mac = run(sys.argv[2], sys.argv[3])
+    if win.keys() != mac.keys():
+        sys.exit("FAIL: the programs print different lines")
+
+    worst = {}       # (kind, quantity) -> (difference, key)
+    exact_errors = []
+    for key, a in win.items():
+        b = mac[key]
+        kind = key[0]
+        if kind == "mesh" or len(a) != len(b):
+            if a != b:
+                exact_errors.append(f"{' '.join(key)}: {a} != {b}")
+            continue
+        col = 0
+        for name, width in LAYOUT[kind]:
+            if col >= len(a):
+                break
+            d = max(abs(float(x) - float(y)) for x, y in zip(a[col:col + width], b[col:col + width]))
+            if d > worst.get((kind, name), (-1,))[0]:
+                worst[(kind, name)] = (d, key)
+            col += width
+
+    print(f"\n  {'quantity':34} {'max |windows - mac|':>20}")
+    failed = bool(exact_errors)
+    for (kind, name), (d, key) in sorted(worst.items()):
+        flag = "" if d <= tolerance else f"   > {tolerance}  at {' '.join(key[1:])}"
+        failed |= d > tolerance
+        print(f"  {kind + ': ' + name:34} {d:20.3g}{flag}")
+    for e in exact_errors:
+        print("  differs:", e)
+    print(f"\n{'FAIL' if failed else 'PASS'}: {len(win)} lines compared, tolerance {tolerance}")
+    sys.exit(1 if failed else 0)
+
+@ \emph{The stand-ins.} DirectXMath expects a header \texttt{sal.h} with Microsoft's
+\emph{source annotations}, macros such as |_In_| that document parameters for code
+analysis and expand to nothing in an ordinary compilation.
+
+<<file:mac/compare/shims/sal.h>>=
+// Empty stand-ins for the Microsoft source annotations used by DirectXMath, which needs a
+// sal.h on platforms other than Windows. They only document parameters; they generate no code.
+#pragma once
+#define _Analysis_assume_(e)
+#define _In_
+#define _In_reads_(n)
+#define _In_reads_bytes_(n)
+#define _Out_
+#define _Out_opt_
+#define _Out_writes_(n)
+#define _Out_writes_bytes_(n)
+#define _Success_(e)
+#define _Use_decl_annotations_
+
+@ |ComPtr| holds a pointer and offers the members that \texttt{src/Material.*} use.
+
+<<file:mac/compare/shims/wrl/client.h>>=
+// A minimal Microsoft::WRL::ComPtr, enough for src/Material.h and src/Material.cpp to
+// compile on macOS. The probe never creates real COM objects, so it holds only a pointer.
+#pragma once
+
+namespace Microsoft::WRL {
+template <class T>
+class ComPtr {
+public:
+    T* Get() const { return p_; }
+    T** GetAddressOf() { return &p_; }
+    T** operator&() { return &p_; }
+    T* operator->() const { return p_; }
+    explicit operator bool() const { return p_ != nullptr; }
+    void Reset() { p_ = nullptr; }
+
+private:
+    T* p_ = nullptr;
+};
+} // namespace Microsoft::WRL
+
+@ The stand-in for Direct3D declares the types, constants and methods that
+\texttt{src/Material.cpp} uses, with the same names and arguments; the methods succeed and
+do nothing. This is a useful exercise in itself: it lists precisely how much of Direct3D
+the loading of a material touches. Since nothing is drawn, the textures stay empty, and
+the probe uses only the CPU copies of the images, which are the ones the inspector reads.
+
+<<file:mac/compare/shims/d3d11.h>>=
+// Just enough of the Direct3D 11 API for src/Material.cpp to compile and run on macOS, so
+// that the Windows version's CPU code (shapes, image sampling, inspector) can be compared
+// with the macOS port. Device calls succeed and do nothing: the probe never draws.
+#pragma once
+#include <cstdint>
+#include <cstdio>
+#include <cwchar>
+
+typedef unsigned int UINT;
+typedef long HRESULT;
+#define S_OK 0
+#define FAILED(hr) ((hr) < 0)
+
+enum DXGI_FORMAT { DXGI_FORMAT_R8G8B8A8_TYPELESS, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB };
+enum D3D11_USAGE { D3D11_USAGE_DEFAULT };
+enum { D3D11_BIND_SHADER_RESOURCE = 0x8, D3D11_BIND_RENDER_TARGET = 0x20 };
+enum { D3D11_RESOURCE_MISC_GENERATE_MIPS = 0x1 };
+enum D3D11_SRV_DIMENSION { D3D11_SRV_DIMENSION_TEXTURE2D = 4 };
+
+struct DXGI_SAMPLE_DESC { UINT Count, Quality; };
+struct D3D11_TEXTURE2D_DESC {
+    UINT Width, Height, MipLevels, ArraySize;
+    DXGI_FORMAT Format;
+    DXGI_SAMPLE_DESC SampleDesc;
+    D3D11_USAGE Usage;
+    UINT BindFlags, CPUAccessFlags, MiscFlags;
+};
+struct D3D11_TEX2D_SRV { UINT MostDetailedMip, MipLevels; };
+struct D3D11_SHADER_RESOURCE_VIEW_DESC {
+    DXGI_FORMAT Format;
+    D3D11_SRV_DIMENSION ViewDimension;
+    D3D11_TEX2D_SRV Texture2D;
+};
+struct D3D11_SUBRESOURCE_DATA;
+struct D3D11_BOX;
+
+struct ID3D11Resource {};
+struct ID3D11Texture2D : ID3D11Resource {};
+struct ID3D11ShaderResourceView {};
+
+struct ID3D11Device {
+    HRESULT CreateTexture2D(const D3D11_TEXTURE2D_DESC*, const D3D11_SUBRESOURCE_DATA*, ID3D11Texture2D**) { return S_OK; }
+    HRESULT CreateShaderResourceView(ID3D11Resource*, const D3D11_SHADER_RESOURCE_VIEW_DESC*, ID3D11ShaderResourceView**) {
+        return S_OK;
+    }
+};
+struct ID3D11DeviceContext {
+    void UpdateSubresource(ID3D11Resource*, UINT, const D3D11_BOX*, const void*, UINT, UINT) {}
+    void GenerateMips(ID3D11ShaderResourceView*) {}
+};
+
+// The Windows code opens files with wide-character paths; on macOS paths are UTF-8.
+inline int _wfopen_s(FILE** f, const char* path, const wchar_t*) {
+    *f = std::fopen(path, "rb");
+    return *f ? 0 : 1;
+}
+
+@* Exercises on the two versions.
+\begin{enumerate}
+\item Make a deliberate change to the bump normal in one version only---for instance,
+forward differences in <<The normal of a height field>>---and run the comparison of
+\S\ref{compare}. Which quantities does it flag, and which does it not? Why does the
+slope change but not the values of the maps?
+\item The two |Frame| structures of the shaders must have the same layout as the C++
+|FrameConstants|. Replace a |packed_float3| by |float3| in
+<<Constants of a frame (Metal)>> and predict what happens on the screen; then check the
+|static_assert| of <<Constants of a frame, as seen from C++ (macOS)>> and explain why it
+does not catch this mistake.
+\item In <<Fill the frame constants (macOS)>>, write |view * proj| instead of
+|proj * view|. What does the image look like, and why does the Windows version need the
+opposite order?
+\item Render the scene at the size in points instead of pixels (remove |scale| from the
+``Viewport'' panel of the macOS version) on a Retina display and compare the sharpness of
+the bricks.
+\item Replace the per-frame line buffer of <<Draw the lines (macOS)>> by a ring of three
+buffers. What must the program know before it can write into a buffer again? (Hint: a
+command buffer can call a function when the GPU has completed it.)
+\item The port compiles its shaders from source at run time. Compile them with the build
+instead, with \texttt{xcrun metal} and \texttt{xcrun metallib}, and load the result with
+|newLibrary(URL)|. What is lost?
+\end{enumerate}

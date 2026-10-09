@@ -1,0 +1,181 @@
+@* macOS: materials.
+A material is still a set of images, each kept twice: as a GPU texture for drawing and
+as bytes in memory for the inspector. What changes is the kind of GPU object. The kinds of
+maps and the description of a material are shared with the first part.
+
+<<file:mac/src/Material.h>>=
+#pragma once
+#include <Metal/Metal.hpp>
+#include <simd/simd.h>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <vector>
+
+<<Kinds of maps>>
+
+<<Map images (macOS)>>
+
+<<Materials>>
+
+<<The material library (macOS)>>
+
+@ In metal-cpp every Metal object is reference counted, as every Direct3D object is, and
+|NS::SharedPtr| plays the part of |ComPtr|: it releases its object when it is destroyed.
+There is one difference in the vocabulary. Direct3D separates a texture (memory) from its
+\emph{views} (interpretations of that memory, the ``shader resource views''); Metal has
+only textures, but a texture can be created as a \emph{view} of another one with a
+different pixel format. So |texLinear| is the texture itself and |texSrgb| a view of it.
+
+<<Map images (macOS)>>=
+// One texture: kept both on the GPU (for rendering / UI) and on the CPU (for the inspector).
+struct MapImage {
+    int width = 0, height = 0;
+    std::vector<uint8_t> rgba;                    // CPU copy, 8 bits per channel
+    NS::SharedPtr<MTL::Texture> texLinear;        // raw values (data maps, UI display)
+    NS::SharedPtr<MTL::Texture> texSrgb;          // a view decoding sRGB (color, for shading)
+
+    // Bilinear sample with wrap addressing; channels in [0,1].
+    simd::float4 Sample(float u, float v) const;
+    // Nearest texel fetch with wrap addressing (red channel).
+    float Texel(int x, int y) const;
+};
+
+@ Direct3D~11 has a \emph{device}, which creates objects, and an \emph{immediate context},
+which executes commands at once. Metal has a device too, but commands are recorded into
+\emph{command buffers} that are taken from a \emph{command queue} and then submitted. The
+library therefore receives the queue where the Windows version receives the context.
+
+<<The material library (macOS)>>=
+class MaterialLibrary {
+public:
+    bool Load(const std::filesystem::path& materialsDir, std::string& error);
+    // Lazily uploads a material's textures the first time it is selected.
+    void EnsureLoaded(int index, MTL::Device* device, MTL::CommandQueue* queue);
+    std::vector<Material>& Items() { return items_; }
+
+private:
+    std::filesystem::path dir_;
+    std::vector<Material> items_;
+};
+
+@ The implementation reuses the decoder, the names, texel access and the parsing of the
+manifest. Bilinear sampling differs only in the type of its result: the interpolation
+itself is the module of the first part. This matters, since the inspector's numbers must
+be the same on both systems.
+
+<<file:mac/src/Material.cpp>>=
+#include "Material.h"
+#include <cmath>
+#include <cstdio>
+#include <fstream>
+#include <nlohmann/json.hpp>
+
+<<Instantiate the image decoder>>
+
+<<Names of the maps>>
+
+<<Texel access with wrap-around>>
+
+simd::float4 MapImage::Sample(float u, float v) const {
+    <<Interpolate between the four nearest texels>>
+}
+
+<<Load one image into a texture (macOS)>>
+
+<<Read the manifest (macOS)>>
+
+<<Load the maps of a material on first use (macOS)>>
+
+@ Paths on macOS are UTF-8 strings, so the file is opened with plain |std::fopen|.
+
+<<Load one image into a texture (macOS)>>=
+static std::shared_ptr<MapImage> LoadImage(const std::filesystem::path& path, bool srgb,
+                                           MTL::Device* device, MTL::CommandQueue* queue) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return nullptr;
+    int w = 0, h = 0, n = 0;
+    stbi_uc* pixels = stbi_load_from_file(f, &w, &h, &n, 4);
+    std::fclose(f);
+    if (!pixels) return nullptr;
+
+    <<Keep a CPU copy of the pixels>>
+
+    <<Create a Metal texture with a full mipmap chain>>
+
+    <<Let the GPU compute the mipmaps>>
+    return img;
+}
+
+@ A Metal texture is described by a |MTL::TextureDescriptor|. The counterpart of the
+typeless format is the usage flag |PixelFormatView|, which allows views with another
+format; the sRGB view decodes the colour map exactly as the |UNORM_SRGB| view does in
+Direct3D. The \emph{storage mode} says where the memory lives: \emph{managed} textures
+have a copy that the CPU can write with |replaceRegion|, which works on every Mac. On a
+Mac with Apple silicon the CPU and the GPU share the same memory, and the copy costs
+nothing.
+
+<<Create a Metal texture with a full mipmap chain>>=
+// Metal's equivalent of a typeless texture: a texture that allows views with a
+// different pixel format, so it can be read as linear (UI) or sRGB (shading).
+MTL::TextureDescriptor* td = MTL::TextureDescriptor::texture2DDescriptor(
+    MTL::PixelFormatRGBA8Unorm, NS::UInteger(w), NS::UInteger(h), true);  // full mip chain
+td->setUsage(MTL::TextureUsageShaderRead | MTL::TextureUsagePixelFormatView);
+td->setStorageMode(MTL::StorageModeManaged);
+img->texLinear = NS::TransferPtr(device->newTexture(td));
+if (!img->texLinear) return nullptr;
+img->texLinear->replaceRegion(MTL::Region::Make2D(0, 0, NS::UInteger(w), NS::UInteger(h)), 0,
+                              img->rgba.data(), NS::UInteger(w) * 4);
+img->texSrgb = srgb ? NS::TransferPtr(img->texLinear->newTextureView(MTL::PixelFormatRGBA8Unorm_sRGB))
+                    : img->texLinear;
+
+@ |GenerateMips| of Direct3D becomes a command of a \emph{blit encoder}, the encoder for
+copies and other operations on memory. We do not wait for it: the queue executes command
+buffers in order, so any later frame that samples the texture comes after the mipmaps.
+
+A word on memory. Functions whose names begin with |new| (or |alloc|) return an object that
+the caller owns, which |NS::TransferPtr| adopts; other functions, like |commandBuffer|,
+return an object owned by the current \emph{autorelease pool}, which releases it when the
+pool is drained (see <<The frame>>). That is why |cmd| needs no release here.
+
+<<Let the GPU compute the mipmaps>>=
+// The GPU computes the smaller mip levels from level 0.
+MTL::CommandBuffer* cmd = queue->commandBuffer();
+MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
+blit->generateMipmaps(img->texLinear.get());
+blit->endEncoding();
+cmd->commit();
+
+@ Reading the manifest is the same as before; only the message names the download script
+with a forward slash.
+
+<<Read the manifest (macOS)>>=
+bool MaterialLibrary::Load(const std::filesystem::path& materialsDir, std::string& error) {
+    dir_ = materialsDir;
+    std::ifstream in(materialsDir / "manifest.json");
+    if (!in) {
+        error = "Cannot open " + (materialsDir / "manifest.json").string() +
+                "\nRun tools/fetch_textures.ps1 first.";
+        return false;
+    }
+    try {
+        <<Parse the entries of the manifest>>
+    } catch (const std::exception& ex) {
+        error = std::string("manifest.json: ") + ex.what();
+        return false;
+    }
+    if (items_.empty()) error = "manifest.json lists no materials";
+    return !items_.empty();
+}
+
+@
+<<Load the maps of a material on first use (macOS)>>=
+void MaterialLibrary::EnsureLoaded(int index, MTL::Device* device, MTL::CommandQueue* queue) {
+    Material& m = items_[index];
+    if (m.loaded) return;
+    m.loaded = true;
+    for (int k = 0; k < MapCount; ++k)
+        if (!m.files[k].empty())
+            m.maps[k] = LoadImage(dir_ / std::filesystem::path(reinterpret_cast<const char8_t*>(m.files[k].c_str())), k == MapColor, device, queue);
+    <<Use the height map as the bump map if there is none>>
+}

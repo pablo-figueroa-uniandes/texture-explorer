@@ -5,7 +5,8 @@
 % the files included below with @i, in the order in which they are best read.
 \title{\textbf{Texture Explorer}\\[6pt]
   \large A literate program about texture maps, bumps and normals\\[2pt]
-  \normalsize written in C++20, HLSL and Direct3D~11}
+  \normalsize written in C++20, HLSL and Direct3D~11,\\
+  and ported to macOS with the Metal Shading Language and Metal}
 \author{}
 \date{\today}
 \newcommand{\vect}[1]{\mathbf{#1}}
@@ -18,3 +19,14 @@
 @i web/app.nw
 @i web/main.nw
 @i web/build.nw
+@i web/mac-intro.nw
+@i web/mac-math.nw
+@i web/mac-shapes.nw
+@i web/mac-materials.nw
+@i web/mac-inspector.nw
+@i web/mac-shaders.nw
+@i web/mac-renderer.nw
+@i web/mac-app.nw
+@i web/mac-main.nw
+@i web/mac-build.nw
+@i web/mac-compare.nw

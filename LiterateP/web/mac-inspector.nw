@@ -1,0 +1,94 @@
+@* macOS: the inspector.
+The inspector is mathematics on the CPU, and the port is the most direct translation of
+all. The settings of bump and displacement are shared; the report of the probe uses
+\texttt{simd} vectors.
+
+<<file:mac/src/Inspector.h>>=
+#pragma once
+#include "Material.h"
+#include "Mesh.h"
+
+<<Settings of bump and displacement>>
+
+<<What the probe reports (macOS)>>
+
+<<Interface of the inspector (macOS)>>
+
+@
+<<What the probe reports (macOS)>>=
+struct HoverInfo {
+    bool valid = false;
+    simd::float2 uv{};
+    simd::float3 color{};
+    float bump = 0, displacement = 0, roughness = 0;
+    simd::float2 slope{};           // dh/dx, dh/dy in texels (central differences)
+    simd::float3 normalTangent{};
+    // World-space quantities, available when the uv lands on the current shape.
+    bool onSurface = false;
+    simd::float3 position{}, normalGeom{}, normalBumped{}, tangent{}, bitangent{};
+};
+
+@ DirectXMath passes matrices by value with the special type |FXMMATRIX| (so that they can
+travel in registers); here an ordinary constant reference does the job.
+
+<<Interface of the inspector (macOS)>>=
+// Normal from a height (bump) map, in tangent space. This is the exact formula the
+// fragment shader uses (see mac/shaders/pbr.metal, BumpNormalTS).
+simd::float3 BumpNormalTangent(const MapImage& bump, float u, float v, float strength,
+                               simd::float2* slopeOut = nullptr);
+
+HoverInfo Inspect(const Material& m, float u, float v, Shape shape, const simd::float4x4& world,
+                  const BumpSettings& s);
+
+@ The normal of the height field (\S\ref{bumpnormal}) uses the central differences of the
+first part, word for word, and then normalizes $(-k\,h_x,-k\,h_y,1)$.
+
+<<file:mac/src/Inspector.cpp>>=
+#include "Inspector.h"
+
+using simd::float3;
+
+float3 BumpNormalTangent(const MapImage& bump, float u, float v, float strength, simd::float2* slopeOut) {
+    <<Estimate the slope of the height field by central differences>>
+    // The surface z = k*h(x,y) has normal (-k*dh/dx, -k*dh/dy, 1).
+    return simd::normalize(float3{-strength * dhdx, -strength * dhdy, 1});
+}
+
+<<Inspect one texel (macOS)>>
+
+@ Inspecting a texel follows <<Inspect one texel>> step by step. With column vectors the
+transformation to the world is |TransformPoint(world, p)| rather than
+|XMVector3TransformCoord(p, world)|, the argument order reflecting $M\vect p$ versus
+$\vect pM$; the result is the same.
+
+<<Inspect one texel (macOS)>>=
+HoverInfo Inspect(const Material& m, float u, float v, Shape shape, const simd::float4x4& world, const BumpSettings& s) {
+    HoverInfo h;
+    h.valid = true;
+    h.uv = {u, v};
+    if (auto& c = m.maps[MapColor]) h.color = c->Sample(u, v).xyz;
+    if (auto& b = m.maps[MapBump]) h.bump = b->Sample(u, v).x;
+    if (auto& d = m.maps[MapDisplacement]) h.displacement = d->Sample(u, v).x;
+    if (auto& r = m.maps[MapRoughness]) h.roughness = r->Sample(u, v).x;
+    h.normalTangent = m.maps[MapBump] ? BumpNormalTangent(*m.maps[MapBump], u, v, s.strength, &h.slope)
+                                      : float3{0, 0, 1};
+
+    SurfacePoint sp;
+    if (!FindSurfacePoint(shape, u, v, sp)) return h;
+    h.onSurface = true;
+    float3 t, b, n;
+    TangentFrame(sp, t, b, n);
+    // Tangent space -> object space: columns of the TBN matrix are T, B, N.
+    const float3& nt = h.normalTangent;
+    const float3 nObj = t * nt.x + b * nt.y + n * nt.z;
+    float3 p = sp.pos;
+    if (s.useDisplacement && m.maps[MapDisplacement])
+        p += n * (s.displacementScale * (h.displacement - s.displacementMid));
+    // Object -> world. The world matrix is a pure rotation, so it also transforms normals.
+    h.position = TransformPoint(world, p);
+    h.normalGeom = simd::normalize(TransformNormal(world, n));
+    h.normalBumped = simd::normalize(TransformNormal(world, nObj));
+    h.tangent = simd::normalize(TransformNormal(world, t));
+    h.bitangent = simd::normalize(TransformNormal(world, b));
+    return h;
+}

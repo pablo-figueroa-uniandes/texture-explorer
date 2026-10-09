@@ -334,6 +334,10 @@ patches.push_back(base);
 @ Now the public functions. The first two are mere dispatchers.
 
 <<Public functions of the mesh module>>=
+<<The name of a shape>>
+
+@
+<<The name of a shape>>=
 const char* ShapeName(Shape s) {
     switch (s) {
     case Shape::Sphere: return "Sphere";
@@ -346,6 +350,10 @@ const char* ShapeName(Shape s) {
 
 @
 <<Public functions of the mesh module>>=
+<<The patches of a shape>>
+
+@
+<<The patches of a shape>>=
 std::vector<Patch> MakePatches(Shape shape) {
     switch (shape) {
     case Shape::Sphere: return SpherePatches();
@@ -430,6 +438,10 @@ contains them, solve the affine equations for $(a,b)$, and evaluate the patch. T
 all the inspector needs to place its arrows on the solid.
 
 <<Public functions of the mesh module>>=
+<<Finding the surface point of a texel>>
+
+@
+<<Finding the surface point of a texel>>=
 bool FindSurfacePoint(Shape shape, float u, float v, SurfacePoint& out) {
     for (const Patch& patch : MakePatches(shape)) {
         if (!patch.invertible) continue;

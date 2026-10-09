@@ -96,16 +96,22 @@ smoothly between texels. The pixel shader evaluates exactly the same expression
 
 <<The normal of a height field>>=
 XMFLOAT3 BumpNormalTangent(const MapImage& bump, float u, float v, float strength, XMFLOAT2* slopeOut) {
-    const float du = 1.0f / bump.width, dv = 1.0f / bump.height;
-    // Height change per texel, by central differences.
-    const float dhdx = 0.5f * (bump.Sample(u + du, v).x - bump.Sample(u - du, v).x);
-    const float dhdy = 0.5f * (bump.Sample(u, v + dv).x - bump.Sample(u, v - dv).x);
-    if (slopeOut) *slopeOut = {dhdx, dhdy};
+    <<Estimate the slope of the height field by central differences>>
     // The surface z = k*h(x,y) has normal (-k*dh/dx, -k*dh/dy, 1).
     XMFLOAT3 n;
     XMStoreFloat3(&n, XMVector3Normalize(XMVectorSet(-strength * dhdx, -strength * dhdy, 1, 0)));
     return n;
 }
+
+@ The step to the neighbouring texel is one texel in texture coordinates, $1/W$
+horizontally and $1/H$ vertically.
+
+<<Estimate the slope of the height field by central differences>>=
+const float du = 1.0f / bump.width, dv = 1.0f / bump.height;
+// Height change per texel, by central differences.
+const float dhdx = 0.5f * (bump.Sample(u + du, v).x - bump.Sample(u - du, v).x);
+const float dhdy = 0.5f * (bump.Sample(u, v + dv).x - bump.Sample(u, v - dv).x);
+if (slopeOut) *slopeOut = {dhdx, dhdy};
 
 @ \emph{Inspecting a texel.} First the values that depend only on the material.
 

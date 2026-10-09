@@ -198,10 +198,14 @@ void Vec3Row(const char* label, const XMFLOAT3& v, bool swatch, const char* tip)
     }
 }
 
+@
+<<Private helpers of the application>>=
+<<A row of the inspector's tables for a scalar>>
+
 @ A scalar is shown both as a fraction and as the byte actually stored in the image,
 because students often meet both forms.
 
-<<Private helpers of the application>>=
+<<A row of the inspector's tables for a scalar>>=
 void ScalarRow(const char* label, float v, const char* tip) {
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
@@ -254,10 +258,14 @@ void AddCircle(std::vector<LineVertex>& out, XMFLOAT3 c, XMVECTOR ax, XMVECTOR a
     }
 }
 
+@
+<<Private helpers of the application>>=
+<<Names of the debug views>>
+
 @ The names of the debug views, in the order of the |viewMode| values of
 <<Choose a debug view>>.
 
-<<Private helpers of the application>>=
+<<Names of the debug views>>=
 const char* kViewModes[] = {"Lit (GGX)", "Albedo only", "World normal (bumped)", "Tangent-space normal",
                             "Roughness", "Bump height", "UV coordinates"};
 
@@ -294,6 +302,10 @@ bool App::Init(HWND hwnd) {
 
 @
 <<Functions of the application>>=
+<<Shutting down the application>>
+
+@
+<<Shutting down the application>>=
 void App::Shutdown() { renderer_.Shutdown(); }
 
 @
@@ -377,11 +389,15 @@ if (probeValid_) {
 UiViewport();
 UiConcepts();
 
+@
+<<Functions of the application>>=
+<<The initial layout of the panels>>
+
 @ \label{docklayout}\emph{The initial layout} splits the window into three columns: on the
 left the list of materials above the controls; in the middle the 3D viewport; on the
 right the maps above the inspector.
 
-<<Functions of the application>>=
+<<The initial layout of the panels>>=
 void App::BuildDockLayout(ImGuiID dockId) {
     ImGui::DockBuilderRemoveNode(dockId);
     ImGui::DockBuilderAddNode(dockId, ImGuiDockNodeFlags_DockSpace);
@@ -599,10 +615,14 @@ if (probeValid_) {
     dl->AddCircle(p, 5, col, 0, 2);
 }
 
+@
+<<Functions of the application>>=
+<<The Maps panel>>
+
 @ \emph{The ``Maps'' panel} shows the five maps as tiles, three per row, as large as the
 panel allows. Clicking a tile selects it for the inspector.
 
-<<Functions of the application>>=
+<<The Maps panel>>=
 void App::UiMaps() {
     ImGui::Begin("Maps");
     const Material& m = Current();
